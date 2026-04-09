@@ -1,0 +1,16 @@
+.DS_Store
+.idea/
+.vscode/
+.pytest_cache/
+.venv/
+__pycache__/
+*.pyc
+*.db
+.env
+.env.*
+backend/.coverage
+backend/htmlcov/
+frontend/node_modules/
+frontend/dist/
+coverage.xml
+
