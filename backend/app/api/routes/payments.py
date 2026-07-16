@@ -1,9 +1,9 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 
 from app.api.deps import get_payment_service
-from app.domain import PaymentAlreadyExistsError, PaymentNotFoundError
+from app.domain import IdempotencyConflictError, PaymentAlreadyExistsError, PaymentNotFoundError
 from app.schemas.processing import PaymentEventItem, PaymentMetrics, PaymentProcessingSnapshot
 from app.schemas.payment import PaymentCreate, PaymentDetail, PaymentListItem
 from app.services.payment_service import PaymentService
@@ -15,9 +15,15 @@ router = APIRouter()
 def create_payment(
     payload: PaymentCreate,
     service: PaymentService = Depends(get_payment_service),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
 ) -> PaymentDetail:
     try:
-        return service.create_payment(payload)
+        return service.create_payment(payload, idempotency_key=idempotency_key)
+    except IdempotencyConflictError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
     except PaymentAlreadyExistsError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

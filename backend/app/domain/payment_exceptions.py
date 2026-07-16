@@ -12,3 +12,11 @@ class PaymentNotFoundError(Exception):
         super().__init__(f"Payment {payment_id} not found")
         self.payment_id = payment_id
 
+
+class IdempotencyConflictError(Exception):
+    def __init__(self, key: str) -> None:
+        super().__init__(
+            f"Idempotency-Key {key} was already used with a different request payload"
+        )
+        self.key = key
+

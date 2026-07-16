@@ -4,7 +4,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.payment import Payment, PaymentEvent, PaymentStatus
+from app.models.payment import IdempotencyKey, Payment, PaymentEvent, PaymentStatus
 
 
 class PaymentRepository(ABC):
@@ -33,7 +33,7 @@ class PaymentRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def list(self) -> list[Payment]:
+    def list_payments(self) -> list[Payment]:
         raise NotImplementedError
 
     @abstractmethod
@@ -46,6 +46,14 @@ class PaymentRepository(ABC):
 
     @abstractmethod
     def get_status_counts(self) -> dict[PaymentStatus, int]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_idempotency_key(self, key: str) -> IdempotencyKey | None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def add_idempotency_key(self, record: IdempotencyKey) -> None:
         raise NotImplementedError
 
 
@@ -71,7 +79,7 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
     def get(self, payment_id: UUID) -> Payment | None:
         return self.session.get(Payment, payment_id)
 
-    def list(self) -> list[Payment]:
+    def list_payments(self) -> list[Payment]:
         statement = select(Payment).order_by(Payment.created_at.desc())
         return list(self.session.scalars(statement))
 
@@ -97,3 +105,10 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
             select(Payment.status, func.count(Payment.id)).group_by(Payment.status)
         ).all()
         return dict(rows)
+
+    def get_idempotency_key(self, key: str) -> IdempotencyKey | None:
+        statement = select(IdempotencyKey).where(IdempotencyKey.key == key)
+        return self.session.scalar(statement)
+
+    def add_idempotency_key(self, record: IdempotencyKey) -> None:
+        self.session.add(record)

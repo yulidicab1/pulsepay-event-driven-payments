@@ -1,4 +1,4 @@
-from app.models.payment import Payment, PaymentEvent
+from app.models.payment import IdempotencyKey, Payment, PaymentEvent
 
-__all__ = ["Payment", "PaymentEvent"]
+__all__ = ["IdempotencyKey", "Payment", "PaymentEvent"]
 

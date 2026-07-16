@@ -167,11 +167,15 @@ Available services:
 
 ### Run backend locally without Docker
 
+The database schema is managed by Alembic. Apply the migrations before starting
+the API (the app no longer creates tables on startup):
+
 ```bash
 cd backend
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
@@ -218,6 +222,18 @@ The defaults are tuned for local Docker Compose usage.
 - `WORKER_POLL_INTERVAL_SECONDS`
 - `WORKER_BATCH_SIZE`
 
+### Database migrations
+
+Schema changes are managed with Alembic (`backend/migrations`). Under Docker
+Compose the backend runs `alembic upgrade head` automatically before starting
+the API. Common commands from `backend/`:
+
+```bash
+alembic upgrade head                          # apply all migrations
+alembic revision --autogenerate -m "message"  # generate a migration from model changes
+alembic downgrade -1                           # roll back the last migration
+```
+
 ### Docker Compose behavior
 
 Docker Compose starts:
@@ -250,7 +266,6 @@ The tests intentionally favor behavior over implementation details, so they act 
 If this project were taken beyond MVP, the next steps would be:
 
 - Replace the PostgreSQL queue implementation with AWS SQS
-- Add Alembic migrations for production schema management
 - Add authentication and per-merchant authorization
 - Introduce webhook delivery for downstream payment status notifications
 - Add observability integrations such as OpenTelemetry traces and metrics

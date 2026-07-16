@@ -35,6 +35,11 @@ class PostgresQueueConsumer(QueueConsumer):
             .where(PaymentEvent.available_at <= datetime.now(UTC))
             .order_by(PaymentEvent.created_at.asc())
             .limit(batch_size)
+            # Lock the claimed rows so concurrent workers never grab the same
+            # message. skip_locked lets other workers move on to other rows
+            # instead of blocking. On PostgreSQL this renders FOR UPDATE SKIP
+            # LOCKED; SQLite (used in tests) silently ignores it.
+            .with_for_update(skip_locked=True)
         )
         events = list(self.session.scalars(statement))
         for event in events:

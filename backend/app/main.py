@@ -7,13 +7,13 @@ from app.api.router import api_router
 from app.core.config import settings
 from app.core.logging import configure_logging
 from app.db.base import *  # noqa: F403
-from app.db.session import Base, engine
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # The database schema is managed by Alembic migrations (`alembic upgrade
+    # head`), run before the app starts. See docker-compose.yml and the README.
     configure_logging()
-    Base.metadata.create_all(bind=engine)
     yield
 
 
