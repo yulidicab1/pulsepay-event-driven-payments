@@ -1,3 +1,29 @@
-node_modules
-dist
+# Keep only the package manifests, Vite configuration, and application assets.
+**
+!package.json
+!package-lock.json
+!index.html
+!tsconfig.json
+!vite.config.ts
+!src/
+!public/
 
+# Exclude local configuration, credentials, and generated data at any depth.
+**/.env*
+**/.git
+**/.aws
+**/.ssh
+**/.netrc
+**/.npmrc
+**/.pypirc
+**/credentials
+**/credentials.*
+**/secrets
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.db
+**/*.sqlite*
+**/node_modules
+**/dist

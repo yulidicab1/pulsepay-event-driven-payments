@@ -1,6 +1,28 @@
-.venv
-__pycache__
-.pytest_cache
-htmlcov
-test_pulsepay.db
+# Keep only the application, migrations, and files needed to build or test.
+**
+!requirements.txt
+!alembic.ini
+!app/
+!migrations/
+!tests/
 
+# Exclude local configuration, credentials, and generated data at any depth.
+**/.env*
+**/.git
+**/.aws
+**/.ssh
+**/.netrc
+**/.npmrc
+**/.pypirc
+**/credentials
+**/credentials.*
+**/secrets
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.db
+**/*.sqlite*
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
