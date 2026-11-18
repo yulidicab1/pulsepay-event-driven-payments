@@ -3,19 +3,8 @@
 These tests demonstrate the "double claim" race condition and prove the
 `FOR UPDATE SKIP LOCKED` fix in `PostgresQueueConsumer.claim_available`.
 
-They require a real PostgreSQL instance because SQLite (used by the rest of
-the suite) serializes all access and cannot reproduce row-level locking. The
-module is skipped automatically when Postgres is not reachable, so the default
-`pytest` run stays green without extra infrastructure.
-
-WARNING: the fixtures create and drop all tables on TEST_POSTGRES_URL, so point
-it at a disposable database, not one holding data you care about.
-
-Run against the local Docker Compose database with:
-
-    docker compose up -d postgres
-    TEST_POSTGRES_URL=postgresql+psycopg://pulsepay:pulsepay@localhost:5432/pulsepay \
-        backend/.venv/bin/pytest backend/tests/test_queue_concurrency.py -v
+They require a dedicated PostgreSQL database configured with TEST_POSTGRES_URL.
+Each test uses its own schema. See the README for setup.
 """
 
 import os
@@ -24,47 +13,57 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 import pytest
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError, SQLAlchemyError
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.schema import CreateSchema, DropSchema
 
 from app.core.config import settings
 from app.db.session import Base
 from app.models.payment import Payment, PaymentEvent, PaymentStatus, QueueMessageStatus
 from app.queue.postgres import PostgresQueueConsumer
 
-POSTGRES_URL = os.environ.get(
-    "TEST_POSTGRES_URL",
-    "postgresql+psycopg://pulsepay:pulsepay@localhost:5432/pulsepay",
-)
-
-
-def _postgres_available() -> bool:
-    try:
-        probe_engine = create_engine(POSTGRES_URL)
-        with probe_engine.connect():
-            return True
-    except Exception:
-        return False
-    finally:
-        try:
-            probe_engine.dispose()
-        except Exception:
-            pass
-
-
-pytestmark = pytest.mark.skipif(
-    not _postgres_available(),
-    reason=f"PostgreSQL not reachable at {POSTGRES_URL}; skipping concurrency tests",
-)
-
-
 @pytest.fixture
 def pg_engine():
-    engine = create_engine(POSTGRES_URL)
-    Base.metadata.create_all(bind=engine)
-    yield engine
-    Base.metadata.drop_all(bind=engine)
-    engine.dispose()
+    raw_url = os.getenv("TEST_POSTGRES_URL", "").strip()
+    if not raw_url:
+        pytest.skip("Set TEST_POSTGRES_URL to run the PostgreSQL concurrency tests")
+
+    try:
+        url = make_url(raw_url)
+    except (ArgumentError, ValueError):
+        raise pytest.fail.Exception("TEST_POSTGRES_URL is not a valid database URL", pytrace=False) from None
+    if (
+        url.drivername not in {"postgresql", "postgresql+psycopg"}
+        or not (url.database or "").endswith("_test")
+    ):
+        pytest.fail("TEST_POSTGRES_URL must point to a PostgreSQL database ending in _test", pytrace=False)
+
+    schema = f"pulsepay_test_{uuid.uuid4().hex}"
+    engine = create_engine(
+        url.set(drivername="postgresql+psycopg"),
+        connect_args={"connect_timeout": 3, "options": f"-csearch_path={schema}"},
+        hide_parameters=True,
+    )
+    try:
+        with engine.begin() as connection:
+            if connection.scalar(select(func.current_database())) != url.database:
+                pytest.fail("Connected to a different database than TEST_POSTGRES_URL names", pytrace=False)
+            connection.execute(CreateSchema(schema))
+            Base.metadata.create_all(connection)
+
+        yield engine
+
+        with engine.begin() as connection:
+            Base.metadata.drop_all(connection)
+            connection.execute(DropSchema(schema))
+    except (SQLAlchemyError, ValueError):
+        raise pytest.fail.Exception(
+            "Could not set up or clean up the isolated PostgreSQL test schema", pytrace=False
+        ) from None
+    finally:
+        engine.dispose()
 
 
 @pytest.fixture

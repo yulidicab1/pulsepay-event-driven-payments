@@ -199,12 +199,23 @@ npm run dev
 
 ### Run tests
 
-From the repo root:
+From the repository root:
 
 ```bash
-cd backend
-.venv/bin/pytest
+backend/.venv/bin/python -m pytest
 ```
+
+The main backend suite uses SQLite. The concurrency tests require a separate,
+disposable PostgreSQL database whose name ends in `_test`. Export
+`TEST_POSTGRES_URL` with that database's connection URL using the
+`postgresql+psycopg` driver, then run the same command. The test role must be
+able to create a schema in the database. Each test creates and removes its own
+schema.
+
+With `TEST_POSTGRES_URL` unset, the PostgreSQL tests are skipped. An invalid or
+unreachable configuration fails those tests without displaying the URL. Use a
+dedicated test database rather than the database from the development Compose
+stack.
 
 ## Configuration
 

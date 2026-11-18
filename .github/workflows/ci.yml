@@ -14,13 +14,13 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: pulsepay
+          POSTGRES_DB: pulsepay_test
           POSTGRES_USER: pulsepay
-          POSTGRES_PASSWORD: pulsepay
+          POSTGRES_HOST_AUTH_METHOD: trust
         ports:
-          - 5432:5432
+          - "127.0.0.1:5432:5432"
         options: >-
-          --health-cmd "pg_isready -U pulsepay -d pulsepay"
+          --health-cmd "pg_isready -h 127.0.0.1 -U pulsepay -d pulsepay_test"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -42,7 +42,7 @@ jobs:
         env:
           # SQLite suite is configured inside tests/conftest.py. The concurrency
           # tests use this URL to exercise real FOR UPDATE SKIP LOCKED behavior.
-          TEST_POSTGRES_URL: postgresql+psycopg://pulsepay:pulsepay@localhost:5432/pulsepay
+          TEST_POSTGRES_URL: postgresql+psycopg://pulsepay@127.0.0.1:5432/pulsepay_test
         run: python -m pytest -v
 
   frontend:
