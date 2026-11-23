@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,6 +16,8 @@ class Settings(BaseSettings):
     worker_poll_interval_seconds: float = 2.0
     worker_batch_size: int = 10
     payment_random_failure_rate: float = 0.0
+    # External JSON key file, provisioned separately from source and images.
+    webhook_keyring_file: Path | None = None
 
 
 settings = Settings()
