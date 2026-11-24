@@ -154,21 +154,39 @@ The processor includes deterministic rules so the system can be demonstrated rel
 
 ### Run the full system
 
+Create credential files outside the repository and set the paths listed in
+`.env.example`. The database URL file contains the connection string for the
+backend, using the PostgreSQL service hostname. The password file is consumed
+by the official PostgreSQL image. Example values in documentation are
+placeholders and must be replaced in those private files.
+
+For a new database, run the explicit setup steps:
+
 ```bash
-docker compose up --build
+docker compose up -d postgres
+docker compose run --rm --no-deps backend alembic upgrade head
+docker compose run --rm --no-deps backend python -m app.manage_users create --new-merchant "My merchant" --email owner@example.com
+docker compose up -d backend worker frontend
 ```
 
-Available services:
+The user command prompts privately for a password of 15 to 128 characters.
+Then open the dashboard at http://localhost:5173 and sign in.
 
-- Frontend dashboard: [http://localhost:5173](http://localhost:5173)
-- Backend API: [http://localhost:8000](http://localhost:8000)
-- Health endpoint: [http://localhost:8000/api/v1/health](http://localhost:8000/api/v1/health)
-- PostgreSQL: `localhost:5432`
+For an existing database, first approve and verify a backup and recovery plan.
+The ownership migration preserves historical rows with no merchant assigned.
+Those rows are excluded from merchant APIs and worker processing until an
+explicit ownership decision. Migration and seeding are operator actions.
+Starting the application does not perform either action.
+
+The base Compose file uses built images and external secret files. Rebuild
+after code changes. The existing PostgreSQL volume is retained. Changing a
+password file does not rotate the password already stored by PostgreSQL.
 
 ### Run backend locally without Docker
 
-The database schema is managed by Alembic. Apply the migrations before starting
-the API (the app no longer creates tables on startup):
+Use Python 3.11 or newer and configure an external connection URL or a
+`DATABASE_URL_FILE` pointing to one. For direct host execution, use the
+appropriate local PostgreSQL hostname in that private URL file.
 
 ```bash
 cd backend
@@ -176,8 +194,14 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 alembic upgrade head
+python -m app.manage_users create --new-merchant "My merchant" --email owner@example.com
 uvicorn app.main:app --reload
 ```
+
+Use migrations only on a new database or after explicit approval for existing
+data. Development bootstrap additionally requires `APP_ENV=development`,
+`SEED_DEV_ENABLED=true`, `DEV_USER_EMAIL`, and an external
+`DEV_USER_PASSWORD_FILE`. Production rejects this bootstrap even when enabled.
 
 ### Run worker locally without Docker
 
@@ -217,6 +241,11 @@ unreachable configuration fails those tests without displaying the URL. Use a
 dedicated test database rather than the database from the development Compose
 stack.
 
+The backup/restore test additionally requires `TEST_BACKUP_POSTGRES_URL` for a
+different disposable database ending in `_test`, plus `pg_dump` and `pg_restore`
+on PATH or in `TEST_POSTGRES_BIN`. It restores and removes only the random
+schema created by the test; it never overwrites an existing schema.
+
 ## Configuration
 
 The defaults are tuned for local Docker Compose usage.
@@ -224,6 +253,8 @@ The defaults are tuned for local Docker Compose usage.
 ### Backend environment variables
 
 - `DATABASE_URL`
+- `DATABASE_URL_FILE`
+- `PUBLIC_ORIGIN`
 - `API_V1_PREFIX`
 - `APP_ENV`
 - `PAYMENT_QUEUE_NAME`
@@ -235,9 +266,10 @@ The defaults are tuned for local Docker Compose usage.
 
 ### Database migrations
 
-Schema changes are managed with Alembic (`backend/migrations`). Under Docker
-Compose the backend runs `alembic upgrade head` automatically before starting
-the API. Common commands from `backend/`:
+Schema changes are managed with Alembic (`backend/migrations`). Run migrations
+explicitly before starting the API, on a new database or after approval of a
+backup and recovery plan for existing data. Application startup never applies
+migrations. Common commands from `backend/`:
 
 ```bash
 alembic upgrade head                          # apply all migrations
@@ -277,7 +309,6 @@ The tests intentionally favor behavior over implementation details, so they act 
 If this project were taken beyond MVP, the next steps would be:
 
 - Replace the PostgreSQL queue implementation with AWS SQS
-- Add authentication and per-merchant authorization
 - Introduce webhook delivery for downstream payment status notifications
 - Add observability integrations such as OpenTelemetry traces and metrics
 - Expand the dashboard with charts, search, pagination, and audit drill-down
@@ -299,3 +330,85 @@ If you are reviewing this repo quickly, the most representative files are:
 
 Before publishing, make sure the repository does not include local-only artifacts such as virtual environments, build outputs, cached Python bytecode, database files, or environment files. The `.gitignore` files in the repo are set up to exclude those by default.
 
+
+## Dashboard authentication
+
+Dashboard users belong to one merchant. Passwords are hashed with Argon2id.
+FastAPI manages server-side PostgreSQL sessions with hashed random identifiers.
+The browser receives a host-only HttpOnly cookie. HTTPS cookies use the
+`__Host-` prefix and Secure. Production configuration requires PostgreSQL and an HTTPS
+`PUBLIC_ORIGIN`. The frontend sends relative `/api` requests through its
+same-origin deployment; Vite provides the development proxy using the
+server-side `API_PROXY_TARGET`.
+
+A short pre-session and CSRF token are created before login. Successful login
+replaces that session and its CSRF token. State-changing cookie-authenticated
+requests require both an allowed Origin and the session's CSRF token.
+Responses containing API data use Cache-Control no-store. Session expiry is
+enforced server-side, with an eight-hour absolute limit and thirty-minute
+request inactivity limit by default. Polling runs only while authenticated.
+
+Dashboard users are provisioned explicitly using `app.manage_users`.
+Its reset-password and disable commands revoke all sessions for that user.
+Login attempt limits are stored in PostgreSQL and shared across API instances.
+Session and password material must be excluded from logs.
+
+Argon2id uses the library's recommended parameters (64 MiB, three passes and
+four lanes with the declared dependencies), with a random salt per password.
+Tests enforce an Argon2id work factor floor. Benchmark authentication capacity
+on deployment hardware before changing the work factor.
+
+CORS allows only the configured public origin, GET/POST and the headers used by
+this API. The HTTPS scheme is normalized before determining cookie protection.
+Deploy the production dashboard and `/api` behind the same HTTPS origin. The
+reverse proxy must enforce TLS and discard client-supplied forwarding headers;
+configure Uvicorn to trust only that proxy. Source attempt limits otherwise see
+the proxy or NAT address. Cookies stolen from an active browser remain usable
+until server-side expiry or revocation; HttpOnly does not prevent XSS from
+making requests in that browser. Revocation blocks subsequent authentication,
+but an operation already authorized may finish.
+
+Merchant API keys remain available for server integrations. The administrative
+merchant creation API issues a key only when `issue_api_key=true` is requested.
+It requires an external `ADMIN_API_TOKEN` or `ADMIN_API_TOKEN_FILE`.
+A panel session cannot access this administrative endpoint. Requests combining
+a dashboard cookie with Bearer credentials are rejected.
+
+## Historical ownership and recovery
+
+The additive expansion introduces nullable merchant ownership for historical
+payments and idempotency records. New API-created payments require an owner.
+Partial unique indexes preserve historical references, and database constraints
+keep idempotency records associated with their payment's merchant.
+
+The previously unpublished merchant revision is represented as a safe
+expansion in this candidate. A following compatibility revision also accepts
+an already-expanded database with mandatory merchant columns. Applied revision
+state must be checked before planning any persistent upgrade. The tests run
+these paths exclusively on disposable databases.
+
+Downgrades reject removal of merchants or dashboard users that contain data.
+Keep backups encrypted outside the repository and verify restores separately.
+Historical ownership assignment is a separate, explicitly approved operation.
+The migration never guesses a merchant from an email or reference.
+
+## Required validation for subsequent features
+
+The Stripe commit must preserve a logical payment's idempotency across retries
+and reconcile uncertain provider responses against the existing PaymentIntent.
+Real payments must remain disabled until those behaviors are verified.
+
+The webhook commit must integrate authenticated encryption of signing secrets,
+prevent SSRF including private destinations and DNS/redirect bypasses, and
+verify isolation between merchants. These features are outside this candidate.
+
+## Credential handling
+
+Older published configuration contains a known development database password.
+Rotate any database that reused it through an explicitly approved database and
+application credential change. Replacing configuration does not erase prior
+Git history or change an existing database password.
+
+Private connection URLs, passwords, integration keys, and encryption key files
+belong outside source directories and build contexts. The example file records
+paths and fictitious identifiers only. Dashboard authentication uses sessions.

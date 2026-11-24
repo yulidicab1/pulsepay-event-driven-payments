@@ -289,12 +289,16 @@ h3 {
 }
 
 .form-footer button,
+.login-form button,
+.account-header button,
 .filter-chip {
   border: none;
   transition: transform 140ms ease, background 140ms ease, color 140ms ease;
 }
 
-.form-footer button {
+.form-footer button,
+.login-form button,
+.account-header button {
   padding: 0.92rem 1.25rem;
   border-radius: 999px;
   background: var(--text-strong);
@@ -302,12 +306,15 @@ h3 {
   font-weight: 600;
 }
 
-.form-footer button:disabled {
+.form-footer button:disabled,
+.login-form button:disabled {
   opacity: 0.65;
   cursor: wait;
 }
 
 .form-footer button:hover:not(:disabled),
+.login-form button:hover:not(:disabled),
+.account-header button:hover:not(:disabled),
 .filter-chip:hover {
   transform: translateY(-1px);
 }
@@ -537,4 +544,31 @@ h3 {
   .filter-row {
     justify-content: flex-start;
   }
+}
+
+
+.login-shell {
+  max-width: 520px;
+  margin: 3rem auto;
+}
+
+.login-panel {
+  padding: 2rem;
+}
+
+.login-form {
+  grid-template-columns: 1fr;
+}
+
+.account-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding-bottom: 0;
+}
+
+.account-header span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }

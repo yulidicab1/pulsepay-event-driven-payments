@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 
 import {
+  ApiError,
+  fetchSession,
+  login,
+  logout,
   createPayment,
   fetchMetrics,
   fetchPayment,
@@ -11,6 +15,8 @@ import {
 import { PaymentDetailPanel } from "./components/PaymentDetailPanel";
 import { PaymentForm } from "./components/PaymentForm";
 import { PaymentTable } from "./components/PaymentTable";
+import { LoginForm } from "./components/LoginForm";
+import type { SessionInfo } from "./types";
 import { SummaryCard } from "./components/SummaryCard";
 import type {
   CreatePaymentInput,
@@ -29,7 +35,7 @@ const EMPTY_METRICS: PaymentMetrics = {
   failed: 0,
 };
 
-export default function App() {
+function Dashboard() {
   const [metrics, setMetrics] = useState<PaymentMetrics>(EMPTY_METRICS);
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [selectedPaymentId, setSelectedPaymentId] = useState<string | null>(null);
@@ -222,5 +228,53 @@ export default function App() {
         />
       </section>
     </main>
+  );
+}
+
+export default function App() {
+  const [session, setSession] = useState<SessionInfo | null>(null);
+  const [checking, setChecking] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    const expired = () => setSession(null);
+    window.addEventListener("session-expired", expired);
+    fetchSession().then((next) => {
+      if (active) setSession(next);
+    }).catch((failure) => {
+      if (active && (!(failure instanceof ApiError) || failure.status !== 401)) {
+        setError("Unable to connect. Refresh the page to try again.");
+      }
+    }).finally(() => {
+      if (active) setChecking(false);
+    });
+    return () => {
+      active = false;
+      window.removeEventListener("session-expired", expired);
+    };
+  }, []);
+
+  if (checking) return <main className="app-shell" role="status">Checking your session...</main>;
+  if (error && !session) return <main className="app-shell"><p role="alert">{error}</p></main>;
+  if (!session) return <LoginForm onSubmit={async (email, password) => setSession(await login(email, password))} />;
+
+  return (
+    <>
+      <header className="app-shell account-header">
+        <span>{session.email}</span>
+        <button type="button" onClick={async () => {
+          try {
+            await logout();
+            setSession(null);
+            setError(null);
+          } catch (failure) {
+            setError(failure instanceof Error ? failure.message : "Unable to sign out.");
+          }
+        }}>Sign out</button>
+        {error ? <p role="alert">{error}</p> : null}
+      </header>
+      <Dashboard key={session.merchant_id} />
+    </>
   );
 }

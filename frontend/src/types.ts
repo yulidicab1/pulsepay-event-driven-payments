@@ -54,3 +54,9 @@ export interface CreatePaymentInput {
   customer_email: string;
   description?: string;
 }
+
+export interface SessionInfo {
+  email: string;
+  merchant_id: string;
+  csrf_token: string;
+}

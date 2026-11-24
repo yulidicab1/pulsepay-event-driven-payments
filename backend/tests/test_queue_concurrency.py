@@ -21,7 +21,13 @@ from sqlalchemy.schema import CreateSchema, DropSchema
 
 from app.core.config import settings
 from app.db.session import Base
-from app.models.payment import Payment, PaymentEvent, PaymentStatus, QueueMessageStatus
+from app.models.payment import (
+    Merchant,
+    Payment,
+    PaymentEvent,
+    PaymentStatus,
+    QueueMessageStatus,
+)
 from app.queue.postgres import PostgresQueueConsumer
 
 @pytest.fixture
@@ -72,9 +78,13 @@ def session_factory(pg_engine):
 
 
 def _seed_pending_event(session_factory) -> uuid.UUID:
-    """Insert one payment plus one PENDING queue message and commit it."""
+    """Insert one merchant, payment and PENDING queue message, then commit."""
     with session_factory() as setup_session:
+        merchant = Merchant(name="Concurrency Merchant")
+        setup_session.add(merchant)
+        setup_session.flush()
         payment = Payment(
+            merchant_id=merchant.id,
             merchant_reference=f"concurrency-{uuid.uuid4().hex[:8]}",
             amount=Decimal("120.00"),
             currency="USD",

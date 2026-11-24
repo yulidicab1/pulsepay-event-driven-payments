@@ -41,19 +41,26 @@ class PaymentService:
         )
         return hashlib.sha256(canonical.encode()).hexdigest()
 
-    def create_payment(self, payload: PaymentCreate, *, idempotency_key: str | None = None) -> Payment:
+    def create_payment(
+        self,
+        payload: PaymentCreate,
+        *,
+        merchant_id: UUID,
+        idempotency_key: str | None = None,
+    ) -> Payment:
         request_hash = self._hash_payload(payload) if idempotency_key is not None else None
 
         if idempotency_key is not None:
-            existing_key = self.repository.get_idempotency_key(idempotency_key)
+            existing_key = self.repository.get_idempotency_key(merchant_id, idempotency_key)
             if existing_key is not None:
                 if existing_key.request_hash != request_hash:
                     raise IdempotencyConflictError(idempotency_key)
-                replayed = self.repository.get(existing_key.payment_id)
+                replayed = self.repository.get(existing_key.payment_id, merchant_id)
                 if replayed is not None:
                     return replayed
 
         payment = Payment(
+            merchant_id=merchant_id,
             merchant_reference=payload.merchant_reference,
             amount=payload.amount,
             currency=payload.currency,
@@ -69,6 +76,7 @@ class PaymentService:
             if idempotency_key is not None:
                 self.repository.add_idempotency_key(
                     IdempotencyKey(
+                        merchant_id=merchant_id,
                         key=idempotency_key,
                         request_hash=request_hash,
                         payment_id=payment.id,
@@ -81,9 +89,11 @@ class PaymentService:
             # between our lookup and commit. Treat that as a replay instead of a
             # duplicate-merchant conflict.
             if idempotency_key is not None:
-                existing_key = self.repository.get_idempotency_key(idempotency_key)
-                if existing_key is not None and existing_key.request_hash == request_hash:
-                    replayed = self.repository.get(existing_key.payment_id)
+                existing_key = self.repository.get_idempotency_key(merchant_id, idempotency_key)
+                if existing_key is not None and existing_key.request_hash != request_hash:
+                    raise IdempotencyConflictError(idempotency_key) from exc
+                if existing_key is not None:
+                    replayed = self.repository.get(existing_key.payment_id, merchant_id)
                     if replayed is not None:
                         return replayed
             raise PaymentAlreadyExistsError(payload.merchant_reference) from exc
@@ -93,36 +103,38 @@ class PaymentService:
             logger,
             "payment_created",
             payment_id=payment.id,
-            merchant_reference=payment.merchant_reference,
-            amount=payment.amount,
-            currency=payment.currency,
             status=payment.status.value,
         )
         return payment
 
-    def list_payments(self) -> list[Payment]:
-        return self.repository.list_payments()
+    def list_payments(self, merchant_id: UUID) -> list[Payment]:
+        return self.repository.list_payments(merchant_id)
 
-    def get_payment(self, payment_id: UUID) -> Payment | None:
-        return self.repository.get(payment_id)
+    def get_payment(self, payment_id: UUID, merchant_id: UUID) -> Payment | None:
+        payment = self.repository.get(payment_id, merchant_id)
+        if payment is None or payment.merchant_id != merchant_id:
+            return None
+        return payment
 
-    def require_payment(self, payment_id: UUID) -> Payment:
-        payment = self.repository.get(payment_id)
+    def require_payment(self, payment_id: UUID, merchant_id: UUID) -> Payment:
+        payment = self.get_payment(payment_id, merchant_id)
         if payment is None:
             raise PaymentNotFoundError(payment_id)
         return payment
 
-    def get_payment_events(self, payment_id: UUID) -> list[PaymentEvent]:
-        self.require_payment(payment_id)
-        return self.repository.list_events(payment_id)
+    def get_payment_events(self, payment_id: UUID, merchant_id: UUID) -> list[PaymentEvent]:
+        self.require_payment(payment_id, merchant_id)
+        return self.repository.list_events(payment_id, merchant_id)
 
-    def get_metrics(self) -> PaymentMetrics:
-        return build_payment_metrics(self.repository.get_status_counts())
+    def get_metrics(self, merchant_id: UUID) -> PaymentMetrics:
+        return build_payment_metrics(self.repository.get_status_counts(merchant_id))
 
-    def get_processing_snapshot(self, payment_id: UUID) -> PaymentProcessingSnapshot | None:
-        payment = self.repository.get(payment_id)
+    def get_processing_snapshot(
+        self, payment_id: UUID, merchant_id: UUID
+    ) -> PaymentProcessingSnapshot | None:
+        payment = self.get_payment(payment_id, merchant_id)
         if payment is None:
             return None
 
-        latest_event = self.repository.get_latest_event(payment_id)
+        latest_event = self.repository.get_latest_event(payment_id, merchant_id)
         return build_processing_snapshot(payment, latest_event)
