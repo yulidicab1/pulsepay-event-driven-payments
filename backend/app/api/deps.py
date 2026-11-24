@@ -1,11 +1,18 @@
 from collections.abc import Generator
 
-from fastapi import Depends
+import secrets
+
+from fastapi import Depends, Header, Request
 from sqlalchemy.orm import Session
 
+from app.core.config import read_secret, settings
 from app.db.session import SessionLocal
+from app.models.payment import Merchant
 from app.queue import PostgresQueueConsumer, PostgresQueuePublisher
-from app.repositories import SqlAlchemyPaymentRepository
+from app.repositories import SqlAlchemyMerchantRepository, SqlAlchemyPaymentRepository
+from app.repositories.auth_repository import SqlAlchemyAuthRepository
+from app.services.auth_service import AuthError, AuthService
+from app.services.merchant_service import MerchantService
 from app.services.payment_processor import PaymentProcessor
 from app.services.payment_service import PaymentService
 from app.services.worker_service import PaymentWorkerService
@@ -27,6 +34,50 @@ def build_payment_service(session: Session) -> PaymentService:
 
 def get_payment_service(session: Session = Depends(get_db_session)) -> PaymentService:
     return build_payment_service(session)
+
+
+def get_merchant_service(session: Session = Depends(get_db_session)) -> MerchantService:
+    return MerchantService(repository=SqlAlchemyMerchantRepository(session))
+
+
+def get_auth_service(session: Session = Depends(get_db_session)) -> AuthService:
+    return AuthService(SqlAlchemyAuthRepository(session), settings)
+
+
+def require_origin(request: Request) -> None:
+    if request.headers.get("origin") != settings.public_origin:
+        raise AuthError("Request origin is not allowed.", 403)
+
+
+def get_current_merchant(
+    request: Request,
+    authorization: str | None = Header(default=None),
+    merchant_service: MerchantService = Depends(get_merchant_service),
+    auth_service: AuthService = Depends(get_auth_service),
+) -> Merchant:
+    cookie = request.cookies.get(settings.session_cookie_name)
+    if authorization is not None:
+        if cookie or len(authorization) > 256 or not authorization.lower().startswith("bearer "):
+            raise AuthError()
+        merchant = merchant_service.authenticate(authorization.split(" ", 1)[1].strip())
+        if merchant is None:
+            raise AuthError()
+        return merchant
+    if not cookie:
+        raise AuthError()
+    unsafe = request.method not in {"GET", "HEAD", "OPTIONS"}
+    if unsafe:
+        require_origin(request)
+    user = auth_service.authenticate(cookie, request.headers.get("X-CSRF-Token"), unsafe=unsafe)
+    return user.merchant
+
+
+def require_admin_token(
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+) -> None:
+    expected = read_secret(settings.admin_api_token, settings.admin_api_token_file)
+    if not expected or not x_admin_token or not secrets.compare_digest(expected.encode(), x_admin_token.encode()):
+        raise AuthError("Administrative access denied.", 403)
 
 
 def build_worker_service(session: Session) -> PaymentWorkerService:

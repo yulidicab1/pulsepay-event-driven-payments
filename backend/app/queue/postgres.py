@@ -5,7 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.payment import PaymentEvent, QueueMessageStatus
+from app.models.payment import Payment, PaymentEvent, QueueMessageStatus
 from app.queue.base import ClaimedMessage, QueueConsumer, QueueEnvelope, QueuePublisher
 
 
@@ -30,6 +30,8 @@ class PostgresQueueConsumer(QueueConsumer):
     def claim_available(self, *, batch_size: int) -> list[ClaimedMessage]:
         statement = (
             select(PaymentEvent)
+            .join(Payment, Payment.id == PaymentEvent.payment_id)
+            .where(Payment.merchant_id.is_not(None))
             .where(PaymentEvent.status == QueueMessageStatus.PENDING)
             .where(PaymentEvent.queue_name == settings.payment_queue_name)
             .where(PaymentEvent.available_at <= datetime.now(UTC))
@@ -39,7 +41,7 @@ class PostgresQueueConsumer(QueueConsumer):
             # message. skip_locked lets other workers move on to other rows
             # instead of blocking. On PostgreSQL this renders FOR UPDATE SKIP
             # LOCKED; SQLite (used in tests) silently ignores it.
-            .with_for_update(skip_locked=True)
+            .with_for_update(skip_locked=True, of=PaymentEvent)
         )
         events = list(self.session.scalars(statement))
         for event in events:

@@ -8,7 +8,7 @@ on:
 jobs:
   backend:
     name: Backend tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     services:
       postgres:
@@ -38,11 +38,16 @@ jobs:
       - name: Install dependencies
         run: pip install -r backend/requirements.txt
 
+      - name: Create disposable restore database
+        run: /usr/lib/postgresql/16/bin/createdb --host=127.0.0.1 --port=5432 --username=pulsepay pulsepay_restore_test
+
       - name: Run tests
         env:
           # SQLite suite is configured inside tests/conftest.py. The concurrency
           # tests use this URL to exercise real FOR UPDATE SKIP LOCKED behavior.
           TEST_POSTGRES_URL: postgresql+psycopg://pulsepay@127.0.0.1:5432/pulsepay_test
+          TEST_BACKUP_POSTGRES_URL: postgresql+psycopg://pulsepay@127.0.0.1:5432/pulsepay_restore_test
+          TEST_POSTGRES_BIN: /usr/lib/postgresql/16/bin
         run: python -m pytest -v
 
   frontend:

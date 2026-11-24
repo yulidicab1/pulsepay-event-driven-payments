@@ -29,27 +29,27 @@ class PaymentRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get(self, payment_id: UUID) -> Payment | None:
+    def get(self, payment_id: UUID, merchant_id: UUID | None = None) -> Payment | None:
         raise NotImplementedError
 
     @abstractmethod
-    def list_payments(self) -> list[Payment]:
+    def list_payments(self, merchant_id: UUID) -> list[Payment]:
         raise NotImplementedError
 
     @abstractmethod
-    def list_events(self, payment_id: UUID) -> list[PaymentEvent]:
+    def list_events(self, payment_id: UUID, merchant_id: UUID) -> list[PaymentEvent]:
         raise NotImplementedError
 
     @abstractmethod
-    def get_latest_event(self, payment_id: UUID) -> PaymentEvent | None:
+    def get_latest_event(self, payment_id: UUID, merchant_id: UUID) -> PaymentEvent | None:
         raise NotImplementedError
 
     @abstractmethod
-    def get_status_counts(self) -> dict[PaymentStatus, int]:
+    def get_status_counts(self, merchant_id: UUID) -> dict[PaymentStatus, int]:
         raise NotImplementedError
 
     @abstractmethod
-    def get_idempotency_key(self, key: str) -> IdempotencyKey | None:
+    def get_idempotency_key(self, merchant_id: UUID, key: str) -> IdempotencyKey | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -76,38 +76,55 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
     def refresh(self, payment: Payment) -> None:
         self.session.refresh(payment)
 
-    def get(self, payment_id: UUID) -> Payment | None:
-        return self.session.get(Payment, payment_id)
+    def get(self, payment_id: UUID, merchant_id: UUID | None = None) -> Payment | None:
+        statement = select(Payment).where(Payment.id == payment_id)
+        if merchant_id is not None:
+            statement = statement.where(Payment.merchant_id == merchant_id)
+        return self.session.scalar(statement)
 
-    def list_payments(self) -> list[Payment]:
-        statement = select(Payment).order_by(Payment.created_at.desc())
+    def list_payments(self, merchant_id: UUID) -> list[Payment]:
+        statement = (
+            select(Payment)
+            .where(Payment.merchant_id == merchant_id)
+            .order_by(Payment.created_at.desc())
+        )
         return list(self.session.scalars(statement))
 
-    def list_events(self, payment_id: UUID) -> list[PaymentEvent]:
+    def list_events(self, payment_id: UUID, merchant_id: UUID) -> list[PaymentEvent]:
         statement = (
             select(PaymentEvent)
+            .join(Payment, Payment.id == PaymentEvent.payment_id)
+            .where(Payment.merchant_id == merchant_id)
             .where(PaymentEvent.payment_id == payment_id)
             .order_by(PaymentEvent.created_at.desc())
         )
         return list(self.session.scalars(statement))
 
-    def get_latest_event(self, payment_id: UUID) -> PaymentEvent | None:
+    def get_latest_event(self, payment_id: UUID, merchant_id: UUID) -> PaymentEvent | None:
         statement = (
             select(PaymentEvent)
+            .join(Payment, Payment.id == PaymentEvent.payment_id)
+            .where(Payment.merchant_id == merchant_id)
             .where(PaymentEvent.payment_id == payment_id)
             .order_by(PaymentEvent.created_at.desc())
             .limit(1)
         )
         return self.session.scalar(statement)
 
-    def get_status_counts(self) -> dict[PaymentStatus, int]:
+    def get_status_counts(self, merchant_id: UUID) -> dict[PaymentStatus, int]:
         rows = self.session.execute(
-            select(Payment.status, func.count(Payment.id)).group_by(Payment.status)
+            select(Payment.status, func.count(Payment.id))
+            .where(Payment.merchant_id == merchant_id)
+            .group_by(Payment.status)
         ).all()
         return dict(rows)
 
-    def get_idempotency_key(self, key: str) -> IdempotencyKey | None:
-        statement = select(IdempotencyKey).where(IdempotencyKey.key == key)
+    def get_idempotency_key(self, merchant_id: UUID, key: str) -> IdempotencyKey | None:
+        statement = (
+            select(IdempotencyKey)
+            .where(IdempotencyKey.merchant_id == merchant_id)
+            .where(IdempotencyKey.key == key)
+        )
         return self.session.scalar(statement)
 
     def add_idempotency_key(self, record: IdempotencyKey) -> None:

@@ -14,3 +14,13 @@ frontend/node_modules/
 frontend/dist/
 coverage.xml
 
+
+# Local credential material.
+*.key
+*.pem
+*.p12
+*.pfx
+credentials
+credentials.*
+secrets/
+!/.env.example
