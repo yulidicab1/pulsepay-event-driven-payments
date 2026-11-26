@@ -31,6 +31,10 @@ def run_worker() -> None:
                     completed=result.completed,
                     retried=result.retried,
                     failed=result.failed,
+                    processing=result.processing,
+                    unknown=result.unknown,
+                    review_required=result.review_required,
+                    stale=result.stale,
                 )
         time.sleep(settings.worker_poll_interval_seconds)
 

@@ -16,6 +16,8 @@ from app.services.merchant_service import MerchantService
 from app.services.payment_processor import PaymentProcessor
 from app.services.payment_service import PaymentService
 from app.services.worker_service import PaymentWorkerService
+from app.services.stripe_gateway import StripeGateway
+from app.services.stripe_processor import StripePaymentProcessor
 
 
 def get_db_session() -> Generator[Session, None, None]:
@@ -84,10 +86,19 @@ def build_worker_service(session: Session) -> PaymentWorkerService:
     repository = SqlAlchemyPaymentRepository(session)
     consumer = PostgresQueueConsumer(session)
     processor = PaymentProcessor()
+    stripe_processor = None
+    if settings.stripe_worker_enabled:
+        stripe_processor = StripePaymentProcessor(gateway=StripeGateway(
+            secret_key=settings.get_stripe_secret_key(), timeout_seconds=settings.stripe_timeout_seconds,
+            account_id=settings.stripe_account_id), request_budget_seconds=4 * settings.stripe_timeout_seconds + 1)
     return PaymentWorkerService(
         payment_repository=repository,
         queue_consumer=consumer,
         processor=processor,
+        stripe_processor=stripe_processor,
+        stripe_account_id=settings.stripe_account_id,
+        stripe_lease_seconds=settings.stripe_lease_seconds,
+        stripe_retry_delay_seconds=settings.stripe_reconcile_delay_seconds,
     )
 
 

@@ -414,12 +414,13 @@ belong outside source directories and build contexts. The example file records
 paths and fictitious identifiers only. Dashboard authentication uses sessions.
 
 
-## Stripe test gateway (not connected to payment processing)
+## Stripe test gateway
 
 The reusable gateway uses `stripe==15.3.1`, `StripeClient.v1.payment_intents`
 and API version `2026-06-24.dahlia`. It is not wired to the API, worker or
 frontend; the simulator and dashboard authentication continue to run as before.
-Setting Stripe configuration does not activate payments.
+Setting a key does not activate payments. Worker execution requires the explicit
+opt-in documented below; API-created payments remain simulator payments.
 
 `STRIPE_MODE` accepts only `test`. Supply either `STRIPE_SECRET_KEY_FILE`
 (preferred, outside source/build contexts) or a server-only `STRIPE_SECRET_KEY`,
@@ -460,14 +461,15 @@ card declines.
 
 Unit tests inject a fake HTTP transport into the real pinned SDK and block
 network sockets. No account, credential or Stripe service is accessed. Even an
-external test-mode verification requires separate approval. Account ownership,
-durable idempotency, leases, reconciliation and integration are still pending.
+external test-mode verification requires separate approval. Durable operations
+and opt-in worker reconciliation are described below. Public provider DTOs and
+the dashboard provider view remain separate activities.
 
 
 ## Durable provider operations (Stripe activity 2)
 
 Each new Payment fixes its processing backend at creation. Existing API calls
-still create simulator payments; the gateway is not connected. Internal service
+still create simulator payments; Stripe is disabled by default. Internal service
 callers may prepare a Stripe test operation with an explicit account and test
 PaymentMethod reference, without any credentials or external requests.
 
@@ -485,8 +487,8 @@ an already-present compatible column and its values. Unknown revision histories
 require a separate approved recovery plan; no revision is stamped or rewritten.
 Owned and unowned historical payments keep IDs, owners, references and statuses,
 with processing_backend=NULL. They remain paused for explicit classification.
-Only explicit simulator rows are claimed by the current worker; prepared Stripe
-rows are also excluded. Changing an environment variable cannot reroute a payment.
+Only explicit simulator rows are claimed by the default worker. Prepared Stripe
+rows need the opt-in worker described below. Changing an environment variable cannot reroute a payment.
 
 PostgreSQL checks validate the request SHA-256 and its amount/currency/UUID/account
 binding. Unique constraints protect provider keys and provider references per
@@ -508,6 +510,62 @@ to remove classified payments/provider evidence. Empty/legacy-only downgrade
 removes the additive columns; if a provider-reference column predated this
 revision, that schema detail must also be reviewed before any downgrade.
 
-Leases/fencing, provider execution/reconciliation, account verification, public
-provider DTOs and UI remain later activities. No production account or credential
+The following section adds leases/fencing and opt-in execution/reconciliation.
+Public provider DTOs and UI remain later activities. No production account or credential
 is supported. Real external test-mode calls still need separate approval.
+
+
+## Recoverable test-mode Stripe worker (activities 3 and 4)
+
+Execution remains disabled (`STRIPE_WORKER_ENABLED=false`). Opt-in requires an
+explicit `STRIPE_ACCOUNT_ID`, a valid server-side test key/file, and a lease longer
+than the configured transport budget. Keep the private file outside the repository
+and Docker context, mounted only into the worker. No secret is needed by React.
+This code has been verified with mocks only; external Stripe testing still needs
+separate authorization. This activity does not activate Stripe in Compose or API
+payment creation, implement Connect, or introduce card/SCA collection.
+
+The worker verifies the current key's account through SDK v1
+`accounts.retrieve_current()` before any PaymentIntent request. A different
+account/key fails safely. The repository selects only test operations bound to
+the configured account. Account selection never comes from an HTTP body or queue
+payload. A future account rotation cannot rewrite a stored operation's context.
+
+Revision `s002_stripe_execution_leases` follows s001 without altering published
+migrations. Four fields on Payment hold execution token, lease deadline, attempt
+counter and next reconciliation time. Historical data is not classified or sent.
+Row locking with SKIP LOCKED grants one active lease per payment, even with
+duplicate messages. Claims and first-attempt/retry deadlines commit before I/O.
+The processor receives a detached immutable contract, not a live ORM transaction.
+Applying a result locks the row and requires the same merchant/account/token and
+an unexpired lease. Stale results do not overwrite current evidence. New workers
+recover expired PROCESSING operations with a fresh token and the original key,
+parameters and retry deadline. Late duplicate messages are acknowledged without
+another provider call. Leases do not renew the provider's idempotency window.
+
+Known PaymentIntent references always use GET, including after the retry window.
+With no reference, identical POST replay is permitted only inside the conservative
+23-hour window. A monotonic budget anchored to database time is checked before
+I/O and again before SDK POST after account lookup. An expired/unsafe window
+requires review instead of a new key or charge. Network errors, timeouts, 5xx and
+incomplete responses are UNKNOWN, not proof of a decline. Reconciliation repeats
+with the configured delay, without applying the simulator's maximum retry rule.
+
+COMPLETED requires coherent succeeded evidence: reference, exact amount received,
+currency, verified account, merchant/payment metadata and livemode=false. Verified
+cancellation/decline maps to FAILED. Intermediate states keep PROCESSING with
+pending/requires_action provider state; unknown and review_required also keep
+PROCESSING publicly. No automatic confirmation/capture or manual-review action is
+added. Final succeeded/failed evidence is frozen by a PostgreSQL trigger. The
+dashboard will expose sanitized provider state in activity 5; no credentials,
+snapshot or idempotency key is added to HTTP responses here.
+
+A lease fences database writes; it cannot cancel a provider request already in
+flight during a process pause. Overlapping transport attempts use the same
+persisted key/parameters, so provider idempotency is the external deduplication
+boundary. Tests demonstrate one simulated provider operation after lost responses,
+concurrent attempts and restarts, not a distributed exactly-once transaction.
+Production deployment also requires a trustworthy synchronized database clock,
+minimal DB privileges and an approved recovery procedure. Live mode is forbidden.
+Downgrade refuses to erase execution evidence. Synthetic backup/restore tests
+include active tokens/leases; persistent migrations are not authorized here.

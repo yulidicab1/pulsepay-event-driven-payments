@@ -23,7 +23,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.schema import DropSchema
 
 from test_queue_concurrency import pg_engine
-from test_postgres_auth import migrate
+from test_postgres_auth import HEAD_REVISION, migrate
 from app.api.deps import build_worker_service, get_db_session
 from app.core.config import settings
 from app.db.session import Base
@@ -406,7 +406,7 @@ def test_provider_downgrade_refuses_evidence_loss(migrated, pg_engine):
     with migrated() as session:
         stored = session.get(Payment, payment.id)
         assert (stored.provider_request, stored.provider_idempotency_key) == expected
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "s001_stripe_payment_operations"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == HEAD_REVISION
 
 
 def test_backup_restore_preserves_contract_and_database_guards(migrated, pg_engine, tmp_path):
@@ -419,7 +419,8 @@ def test_backup_restore_preserves_contract_and_database_guards(migrated, pg_engi
     with migrated() as session:
         payment = stripe_payment(session, owner(session))
         start_reconciliation(session, payment, "pi_backupSynthetic")
-        expected = (payment.merchant_id, payment.provider_idempotency_key, payment.provider_request, payment.provider_request_hash, payment.provider_reference, payment.provider_state, payment.provider_first_attempt_at, payment.provider_retry_until)
+        SqlAlchemyPaymentRepository(session).claim_provider_operation(account_id=ACCOUNT, lease_seconds=120)
+        expected = (payment.merchant_id, payment.provider_idempotency_key, payment.provider_request, payment.provider_request_hash, payment.provider_reference, payment.provider_state, payment.provider_first_attempt_at, payment.provider_retry_until, payment.provider_execution_token, payment.provider_lease_until, payment.provider_attempt_count, payment.provider_next_attempt_at)
         schema = session.scalar(select(func.current_schema()))
     assert re.fullmatch(r"pulsepay_test_[a-f0-9]{32}", schema)
     def environment(url):
@@ -443,7 +444,7 @@ def test_backup_restore_preserves_contract_and_database_guards(migrated, pg_engi
                                 env=environment(target_url), capture_output=True, timeout=20)
         assert result.returncode == 0
         with target.connect() as c:
-            row = c.execute(text(f'SELECT merchant_id,provider_idempotency_key,provider_request,provider_request_hash,provider_reference,provider_state,provider_first_attempt_at,provider_retry_until FROM "{schema}".payments WHERE id=:id'), {"id": payment.id}).one()
+            row = c.execute(text(f'SELECT merchant_id,provider_idempotency_key,provider_request,provider_request_hash,provider_reference,provider_state,provider_first_attempt_at,provider_retry_until,provider_execution_token,provider_lease_until,provider_attempt_count,provider_next_attempt_at FROM "{schema}".payments WHERE id=:id'), {"id": payment.id}).one()
             assert tuple(row) == expected
         with pytest.raises(IntegrityError):
             with target.begin() as c:

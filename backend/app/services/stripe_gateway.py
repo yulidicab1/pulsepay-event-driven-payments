@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import re
+import time
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -47,12 +48,15 @@ class GatewayResult:
     currency: str | None = None
     metadata: tuple[tuple[str, str], ...] = ()
     error_code: str | None = None
+    account_id: str | None = None
+    livemode: bool | None = None
 
 
 class PaymentGateway(ABC):
     @abstractmethod
     def create_payment(self, *, amount: Decimal, currency: str, payment_method: str,
-                       idempotency_key: str, metadata: Mapping[str, str] | None = None) -> GatewayResult:
+                       idempotency_key: str, metadata: Mapping[str, str] | None = None,
+                       request_deadline: float | None = None) -> GatewayResult:
         raise NotImplementedError
 
     @abstractmethod
@@ -96,13 +100,16 @@ def _reference(value: str, prefix: str) -> bool:
 
 class StripeGateway(PaymentGateway):
     def __init__(self, *, secret_key: SecretStr, timeout_seconds: float = 10,
-                 http_client: "stripe.HTTPClient | None" = None) -> None:
+                 http_client: "stripe.HTTPClient | None" = None, account_id: str | None = None) -> None:
         validate_stripe_test_key(secret_key)
         if (
             isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
             or not math.isfinite(timeout_seconds) or not 0 < timeout_seconds <= 30
         ):
             raise ValueError("Invalid Stripe request timeout.")
+        if account_id is not None and (not isinstance(account_id, str) or re.fullmatch(r"acct_[A-Za-z0-9]{1,250}", account_id) is None):
+            raise ValueError("Invalid Stripe account context.")
+        self._account_id = account_id
         import stripe
         self._sdk = stripe
         if self._console_logging():
@@ -124,7 +131,8 @@ class StripeGateway(PaymentGateway):
         ))
 
     def create_payment(self, *, amount: Decimal, currency: str, payment_method: str,
-                       idempotency_key: str, metadata: Mapping[str, str] | None = None) -> GatewayResult:
+                       idempotency_key: str, metadata: Mapping[str, str] | None = None,
+                       request_deadline: float | None = None) -> GatewayResult:
         try:
             minor = to_minor_units(amount, currency)
             if (
@@ -132,6 +140,9 @@ class StripeGateway(PaymentGateway):
                 or re.fullmatch(r"[!-~]{1,255}", idempotency_key) is None
             ):
                 raise ValueError("Invalid payment request.")
+            if request_deadline is not None and (isinstance(request_deadline, bool)
+                or not isinstance(request_deadline, (int, float)) or not math.isfinite(request_deadline)):
+                raise ValueError("Invalid request deadline.")
             tags = _metadata(metadata if metadata is not None else {})
         except ValueError:
             return GatewayResult(GatewayStatus.INVALID_REQUEST, error_code="invalid_request")
@@ -142,20 +153,42 @@ class StripeGateway(PaymentGateway):
         }
         if tags:
             params["metadata"] = tags
-        return self._request(params=params, idempotency_key=idempotency_key)
+        return self._request(params=params, idempotency_key=idempotency_key, request_deadline=request_deadline)
 
     def retrieve_payment(self, provider_reference: str) -> GatewayResult:
         if not _reference(provider_reference, "pi_"):
             return GatewayResult(GatewayStatus.INVALID_REQUEST, error_code="invalid_request")
         return self._request(provider_reference=provider_reference)
 
-    def _request(self, *, provider_reference=None, params=None, idempotency_key=None) -> GatewayResult:
+    def _request(self, *, provider_reference=None, params=None, idempotency_key=None, request_deadline=None) -> GatewayResult:
+        if self._console_logging() or logging.getLogger("stripe").isEnabledFor(logging.INFO):
+            return GatewayResult(GatewayStatus.CONFIGURATION_ERROR, error_code="unsafe_sdk_logging")
+        if self._account_id is not None:
+            try:
+                # Current-key identity, not an arbitrary accessible Connect account.
+                account = self._client.v1.accounts.retrieve_current()
+            except self._sdk.StripeError as exc:
+                denied = isinstance(exc, (self._sdk.AuthenticationError, self._sdk.PermissionError))
+                return GatewayResult(GatewayStatus.CONFIGURATION_ERROR if denied else GatewayStatus.UNKNOWN,
+                    error_code="provider_access_denied" if denied else "account_unavailable")
+            if isinstance(account, self._sdk.StripeObject):
+                account = account.to_dict()
+            if not isinstance(account, Mapping) or account.get("object") != "account" or account.get("id") != self._account_id:
+                return GatewayResult(GatewayStatus.CONFIGURATION_ERROR, error_code="account_mismatch")
+        result = self._payment_intent_request(provider_reference=provider_reference, params=params, idempotency_key=idempotency_key, request_deadline=request_deadline)
+        return replace(result, account_id=self._account_id)
+
+    def _payment_intent_request(self, *, provider_reference=None, params=None, idempotency_key=None, request_deadline=None) -> GatewayResult:
         if self._console_logging() or logging.getLogger("stripe").isEnabledFor(logging.INFO):
             return GatewayResult(GatewayStatus.CONFIGURATION_ERROR, error_code="unsafe_sdk_logging")
         try:
             if provider_reference is not None:
                 intent = self._client.v1.payment_intents.retrieve(provider_reference)
             else:
+                # Recheck after account verification/SDK preparation delays. This
+                # control is transport-only and never enters Stripe parameters.
+                if request_deadline is not None and time.monotonic() >= request_deadline:
+                    return GatewayResult(GatewayStatus.UNKNOWN, error_code="request_deadline_elapsed")
                 intent = self._client.v1.payment_intents.create(params=params, options={"idempotency_key": idempotency_key})
         except self._sdk.StripeError as exc:
             if isinstance(exc, self._sdk.CardError):
@@ -227,4 +260,4 @@ class StripeGateway(PaymentGateway):
         else:
             status = GatewayStatus.PENDING
         return GatewayResult(status, reference, state, amount, received, currency, tuple(sorted(tags.items())),
-                             "payment_canceled" if state == "canceled" else None)
+                             "payment_canceled" if state == "canceled" else None, livemode=False)

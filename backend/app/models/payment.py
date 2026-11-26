@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, ForeignKey, ForeignKeyConstraint, Index, Numeric, String, Text, UniqueConstraint, func, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, Enum, ForeignKey, ForeignKeyConstraint, Index, Integer, Numeric, String, Text, UniqueConstraint, func, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import JSON
@@ -51,6 +51,19 @@ STRIPE_REQUEST_SQL = """processing_backend IS DISTINCT FROM 'stripe' OR (
      'metadata', jsonb_build_object('merchant_id', merchant_id::text, 'payment_id', id::text)))
  AND (provider_first_attempt_at IS NULL OR provider_retry_until = provider_first_attempt_at + interval '23 hours')
 ) IS TRUE"""
+
+EXECUTION_CONTRACT_SQL = """(provider_attempt_count >= 0
+ AND ((provider_execution_token IS NULL AND provider_lease_until IS NULL)
+      OR (provider_execution_token IS NOT NULL AND provider_lease_until IS NOT NULL
+          AND processing_backend = 'stripe' AND provider_state = 'in_flight'))
+ AND (processing_backend = 'stripe' OR (provider_execution_token IS NULL
+      AND provider_next_attempt_at IS NULL AND provider_attempt_count = 0))
+ AND (processing_backend IS DISTINCT FROM 'stripe' OR (
+      (provider_state = 'succeeded' AND status = 'COMPLETED' AND provider_status = 'succeeded' AND provider_reference IS NOT NULL)
+   OR (provider_state = 'failed' AND status = 'FAILED' AND provider_status IN ('canceled','requires_payment_method') AND provider_reference IS NOT NULL)
+   OR (provider_state = 'prepared' AND status = 'PENDING')
+   OR (provider_state IN ('in_flight','pending','requires_action','unknown','review_required') AND status = 'PROCESSING')
+ ))) IS TRUE"""
 
 
 class Merchant(Base):
@@ -114,6 +127,8 @@ class Payment(Base):
         UniqueConstraint("provider_account_id", "provider_livemode", "provider_reference", name="uq_payment_provider_reference"),
         CheckConstraint(PROVIDER_CONTRACT_SQL, name="ck_payment_provider_contract"),
         CheckConstraint(STRIPE_REQUEST_SQL, name="ck_payment_stripe_request").ddl_if(dialect="postgresql"),
+        CheckConstraint(EXECUTION_CONTRACT_SQL, name="ck_payment_execution_contract"),
+        Index("ix_payment_provider_claim", "processing_backend", "provider_account_id", "provider_next_attempt_at"),
         Index("uq_legacy_payment_reference", "merchant_reference", unique=True, postgresql_where=text("merchant_id IS NULL"), sqlite_where=text("merchant_id IS NULL")),
     )
 
@@ -144,6 +159,10 @@ class Payment(Base):
     provider_reference: Mapped[str | None] = mapped_column(String(255), nullable=True, index=True)
     provider_first_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     provider_retry_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_execution_token: Mapped[uuid.UUID | None] = mapped_column(nullable=True)
+    provider_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    provider_attempt_count: Mapped[int] = mapped_column(Integer, server_default="0", default=0, nullable=False)
+    provider_next_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     retry_count: Mapped[int] = mapped_column(default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
