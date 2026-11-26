@@ -412,3 +412,53 @@ Git history or change an existing database password.
 Private connection URLs, passwords, integration keys, and encryption key files
 belong outside source directories and build contexts. The example file records
 paths and fictitious identifiers only. Dashboard authentication uses sessions.
+
+
+## Stripe test gateway (not connected to payment processing)
+
+The reusable gateway uses `stripe==15.3.1`, `StripeClient.v1.payment_intents`
+and API version `2026-06-24.dahlia`. It is not wired to the API, worker or
+frontend; the simulator and dashboard authentication continue to run as before.
+Setting Stripe configuration does not activate payments.
+
+`STRIPE_MODE` accepts only `test`. Supply either `STRIPE_SECRET_KEY_FILE`
+(preferred, outside source/build contexts) or a server-only `STRIPE_SECRET_KEY`,
+never both. Only secret/restricted test-key prefixes are accepted; live and
+publishable keys are rejected before I/O. Keys use SecretStr and errors never
+include their values. `STRIPE_TIMEOUT_SECONDS` is finite, positive and at most
+30 seconds (default 10). TLS verification remains enabled. SDK verbose logging
+(`STRIPE_LOG` or `stripe.log`) is rejected, and its raw INFO/DEBUG logger is
+suppressed; application code should log only normalized error codes.
+
+`create_payment` creates and confirms a PaymentIntent using EUR, USD or GBP.
+Amounts must be Decimal, exactly representable in cents, positive and within
+Stripe's eight-digit minor-unit limit. Trailing zeroes are accepted; rounding
+and floating-point inputs are rejected. Currency is deterministically encoded
+in lowercase. Only payment-method references are accepted, never card data.
+Optional metadata is limited to UUID `merchant_id`, `payment_id` and
+`operation_id` values. The caller's metadata is copied, not mutated.
+
+Every create requires a caller-supplied idempotency key of 1–255 visible ASCII
+characters, preserved exactly. The gateway neither generates keys nor retries
+automatically. Identical calls produce identical payment parameters. The caller
+must persist the key and immutable request, bound retries to Stripe's retention
+window, and reconcile uncertain results before another operation. That durable
+workflow belongs to later activities; this adapter alone does not implement it.
+API v1 keys may be pruned after 24 hours; an unresolved operation must then be
+reconciled instead of creating another Intent with either an old or a new key.
+`retrieve_payment` only issues GET and never creates or confirms a payment.
+
+Results contain a normalized status, selected monetary evidence, provider ID,
+allowlisted UUID metadata and a fixed error code. They exclude client_secret,
+customer/payment details, raw responses and exception messages. Live-mode,
+malformed or inconsistent responses never produce success. Intermediate states
+(including action/confirmation/capture requirements) remain PENDING; network,
+timeout, 409, 429 and 5xx errors are UNKNOWN, not evidence that no charge exists.
+A card error without verifiable Intent evidence is also UNKNOWN; any extracted
+ID is only a candidate for later reconciliation. Configuration errors are not
+card declines.
+
+Unit tests inject a fake HTTP transport into the real pinned SDK and block
+network sockets. No account, credential or Stripe service is accessed. Even an
+external test-mode verification requires separate approval. Account ownership,
+durable idempotency, leases, reconciliation and integration are still pending.
