@@ -33,6 +33,11 @@ class PaymentRepository(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def get_provider_operation(self, payment_id: UUID, merchant_id: UUID, *, account_id: str,
+                               for_update: bool = False) -> Payment | None:
+        raise NotImplementedError
+
+    @abstractmethod
     def list_payments(self, merchant_id: UUID) -> list[Payment]:
         raise NotImplementedError
 
@@ -80,6 +85,17 @@ class SqlAlchemyPaymentRepository(PaymentRepository):
         statement = select(Payment).where(Payment.id == payment_id)
         if merchant_id is not None:
             statement = statement.where(Payment.merchant_id == merchant_id)
+        return self.session.scalar(statement)
+
+    def get_provider_operation(self, payment_id: UUID, merchant_id: UUID, *, account_id: str,
+                               for_update: bool = False) -> Payment | None:
+        statement = select(Payment).where(
+            Payment.id == payment_id, Payment.merchant_id == merchant_id,
+            Payment.processing_backend == "stripe", Payment.provider_account_id == account_id,
+            Payment.provider_livemode.is_(False),
+        ).execution_options(populate_existing=True)
+        if for_update:
+            statement = statement.with_for_update()
         return self.session.scalar(statement)
 
     def list_payments(self, merchant_id: UUID) -> list[Payment]:

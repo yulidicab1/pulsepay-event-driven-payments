@@ -462,3 +462,52 @@ Unit tests inject a fake HTTP transport into the real pinned SDK and block
 network sockets. No account, credential or Stripe service is accessed. Even an
 external test-mode verification requires separate approval. Account ownership,
 durable idempotency, leases, reconciliation and integration are still pending.
+
+
+## Durable provider operations (Stripe activity 2)
+
+Each new Payment fixes its processing backend at creation. Existing API calls
+still create simulator payments; the gateway is not connected. Internal service
+callers may prepare a Stripe test operation with an explicit account and test
+PaymentMethod reference, without any credentials or external requests.
+
+The payment UUID is allocated before insert. Payment, provider idempotency key,
+canonical JSON request/hash, immutable account/test context and queue event are
+committed atomically. The client HTTP Idempotency-Key remains separate; a replay
+returns the original stored provider/context even if server configuration changes.
+No customer email, description, API key or client_secret enters the provider
+snapshot. A scoped repository lookup requires both merchant and expected account.
+
+Revision `s001_stripe_payment_operations` follows `a001_dashboard_sessions` and
+adds nullable columns without a server default or historical backfill. Provider
+reference/index logic is recovered from the unpublished 0bb migration, retaining
+an already-present compatible column and its values. Unknown revision histories
+require a separate approved recovery plan; no revision is stamped or rewritten.
+Owned and unowned historical payments keep IDs, owners, references and statuses,
+with processing_backend=NULL. They remain paused for explicit classification.
+Only explicit simulator rows are claimed by the current worker; prepared Stripe
+rows are also excluded. Changing an environment variable cannot reroute a payment.
+
+PostgreSQL checks validate the request SHA-256 and its amount/currency/UUID/account
+binding. Unique constraints protect provider keys and provider references per
+account/test context. A trigger rejects changes to operation identity, monetary
+parameters, provider request/key/account or an established provider reference;
+once recorded, the first-attempt/retry deadline cannot move. Stripe operations
+cannot be deleted without an explicit recovery plan; TRUNCATE is also blocked.
+Provider references must have the expected format for new Stripe operations.
+The retry window is fixed
+at 23 hours after first emission; preparation leaves emission timestamps empty.
+This activity performs no emissions or reconciliation transitions.
+
+JSON is stored as canonical text so Python and PostgreSQL hash the same bytes,
+without an extension. These guarantees require the Alembic PostgreSQL schema;
+SQLite and metadata.create_all are fast-test conveniences, not equivalent
+operation-immutability enforcement. Do not run a persistent upgrade without a
+verified backup, schema assessment and explicit authorization. Downgrade refuses
+to remove classified payments/provider evidence. Empty/legacy-only downgrade
+removes the additive columns; if a provider-reference column predated this
+revision, that schema detail must also be reviewed before any downgrade.
+
+Leases/fencing, provider execution/reconciliation, account verification, public
+provider DTOs and UI remain later activities. No production account or credential
+is supported. Real external test-mode calls still need separate approval.

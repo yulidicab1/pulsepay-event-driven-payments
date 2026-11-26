@@ -63,7 +63,9 @@ def pg_engine():
 
         with engine.begin() as connection:
             Base.metadata.drop_all(connection)
-            connection.execute(DropSchema(schema))
+            # Functions/triggers created by migration tests belong only to this
+            # generated schema in the explicitly configured disposable database.
+            connection.execute(DropSchema(schema, cascade=True))
     except (SQLAlchemyError, ValueError):
         raise pytest.fail.Exception(
             "Could not set up or clean up the isolated PostgreSQL test schema", pytrace=False

@@ -32,6 +32,9 @@ class PostgresQueueConsumer(QueueConsumer):
             select(PaymentEvent)
             .join(Payment, Payment.id == PaymentEvent.payment_id)
             .where(Payment.merchant_id.is_not(None))
+            # Unknown historical providers and prepared Stripe operations must
+            # never be processed by the simulator or selected by a global flag.
+            .where(Payment.processing_backend == "simulator")
             .where(PaymentEvent.status == QueueMessageStatus.PENDING)
             .where(PaymentEvent.queue_name == settings.payment_queue_name)
             .where(PaymentEvent.available_at <= datetime.now(UTC))

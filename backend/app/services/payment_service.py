@@ -1,6 +1,7 @@
 import hashlib
 import json
-from uuid import UUID
+import re
+from uuid import UUID, uuid4
 
 from sqlalchemy.exc import IntegrityError
 
@@ -18,6 +19,7 @@ from app.queue import QueuePublisher
 from app.repositories import PaymentRepository
 from app.schemas.payment import PaymentCreate
 from app.schemas.processing import PaymentMetrics, PaymentProcessingSnapshot
+from app.services.stripe_gateway import STRIPE_API_VERSION, to_minor_units
 
 logger = get_logger(__name__)
 
@@ -41,12 +43,47 @@ class PaymentService:
         )
         return hashlib.sha256(canonical.encode()).hexdigest()
 
+    @staticmethod
+    def _prepare_processing(payment: Payment, backend: str, account_id: str | None,
+                            payment_method: str | None) -> None:
+        if backend not in {"simulator", "stripe"}:
+            raise ValueError("Unsupported payment provider.")
+        payment.processing_backend = backend
+        if backend == "simulator":
+            if account_id is not None or payment_method is not None:
+                raise ValueError("Simulator payments cannot carry a provider account.")
+            return
+        if (
+            not isinstance(account_id, str) or re.fullmatch(r"acct_[A-Za-z0-9]{1,250}", account_id) is None
+            or not isinstance(payment_method, str) or re.fullmatch(r"pm_[A-Za-z0-9_]{1,250}", payment_method) is None
+        ):
+            raise ValueError("Invalid test provider context.")
+        params = {
+            "amount": to_minor_units(payment.amount, payment.currency), "currency": payment.currency.lower(),
+            "payment_method": payment_method, "confirm": True, "capture_method": "automatic",
+            "automatic_payment_methods": {"enabled": True, "allow_redirects": "never"},
+            "metadata": {"merchant_id": str(payment.merchant_id), "payment_id": str(payment.id)},
+        }
+        snapshot = json.dumps({
+            "operation": "payment_intent.create_confirm", "api_version": STRIPE_API_VERSION,
+            "account_id": account_id, "livemode": False, "params": params,
+        }, sort_keys=True, separators=(",", ":"))
+        payment.provider_account_id = account_id
+        payment.provider_livemode = False
+        payment.provider_idempotency_key = f"pp:stripe:v1:{payment.merchant_id}:{payment.id}"
+        payment.provider_request = snapshot
+        payment.provider_request_hash = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()
+        payment.provider_state = "prepared"
+
     def create_payment(
         self,
         payload: PaymentCreate,
         *,
         merchant_id: UUID,
         idempotency_key: str | None = None,
+        processing_backend: str = "simulator",
+        provider_account_id: str | None = None,
+        payment_method: str | None = None,
     ) -> Payment:
         request_hash = self._hash_payload(payload) if idempotency_key is not None else None
 
@@ -60,6 +97,7 @@ class PaymentService:
                     return replayed
 
         payment = Payment(
+            id=uuid4(),
             merchant_id=merchant_id,
             merchant_reference=payload.merchant_reference,
             amount=payload.amount,
@@ -68,6 +106,7 @@ class PaymentService:
             description=payload.description,
             status=PaymentStatus.PENDING,
         )
+        self._prepare_processing(payment, processing_backend, provider_account_id, payment_method)
         self.repository.add(payment)
 
         try:
@@ -96,7 +135,17 @@ class PaymentService:
                     replayed = self.repository.get(existing_key.payment_id, merchant_id)
                     if replayed is not None:
                         return replayed
+            constraint = getattr(getattr(exc.orig, "diag", None), "constraint_name", None)
+            if getattr(exc.orig, "sqlstate", None) not in {None, "23505"} or (
+                constraint is not None and constraint not in {
+                    "uq_payments_merchant_reference", "uq_idempotency_keys_merchant_key",
+                }
+            ):
+                raise
             raise PaymentAlreadyExistsError(payload.merchant_reference) from exc
+        except Exception:
+            self.repository.rollback()
+            raise
 
         self.repository.refresh(payment)
         log_event(
