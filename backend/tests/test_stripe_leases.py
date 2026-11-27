@@ -2,6 +2,7 @@
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import timedelta
+from pathlib import Path
 from uuid import uuid4
 
 from alembic import op
@@ -170,7 +171,9 @@ def test_downgrade_refuses_to_erase_lease_evidence(migrated,pg_engine):
     from alembic import command
     from alembic.config import Config
     seed(migrated);operation=claim(migrated)
-    config=Config("alembic.ini")
+    backend=Path(__file__).resolve().parents[1]
+    config=Config(str(backend/"alembic.ini"))
+    config.set_main_option("script_location",str(backend/"migrations"))
     with pytest.raises(RuntimeError,match="recovery plan"):
         with pg_engine.begin() as c:
             config.attributes["connection"]=c
