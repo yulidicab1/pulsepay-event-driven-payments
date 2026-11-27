@@ -5,6 +5,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.models.payment import PaymentStatus
+from app.schemas.provider import PaymentProviderInfo, public_processing_note
 
 
 class PaymentCreate(BaseModel):
@@ -20,7 +21,7 @@ class PaymentCreate(BaseModel):
         return value.upper()
 
 
-class PaymentBaseResponse(BaseModel):
+class PaymentBaseResponse(PaymentProviderInfo):
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
@@ -34,6 +35,8 @@ class PaymentBaseResponse(BaseModel):
     retry_count: int
     created_at: datetime
     updated_at: datetime
+
+    _public_reason = field_validator("failure_reason", mode="before")(public_processing_note)
 
 
 class PaymentDetail(PaymentBaseResponse):
@@ -52,3 +55,5 @@ class PaymentStatusUpdate(BaseModel):
     retry_count: int
     failure_reason: str | None
     updated_at: datetime
+
+    _public_reason = field_validator("failure_reason", mode="before")(public_processing_note)

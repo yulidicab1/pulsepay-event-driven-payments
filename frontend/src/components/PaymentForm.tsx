@@ -5,7 +5,8 @@ import type { CreatePaymentInput } from "../types";
 interface PaymentFormProps {
   submitting: boolean;
   error: string | null;
-  onSubmit: (payload: CreatePaymentInput) => Promise<void>;
+  confirmation: string | null;
+  onSubmit: (payload: CreatePaymentInput) => Promise<boolean>;
 }
 
 const initialFormState: CreatePaymentInput = {
@@ -16,17 +17,17 @@ const initialFormState: CreatePaymentInput = {
   description: "",
 };
 
-export function PaymentForm({ submitting, error, onSubmit }: PaymentFormProps) {
+export function PaymentForm({ submitting, error, confirmation, onSubmit }: PaymentFormProps) {
   const [formState, setFormState] = useState<CreatePaymentInput>(initialFormState);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await onSubmit({
+    const saved = await onSubmit({
       ...formState,
       currency: formState.currency.toUpperCase(),
       description: formState.description?.trim() || undefined,
     });
-    setFormState(initialFormState);
+    if (saved) setFormState(initialFormState);
   }
 
   function updateField<Key extends keyof CreatePaymentInput>(field: Key, value: CreatePaymentInput[Key]) {
@@ -43,13 +44,14 @@ export function PaymentForm({ submitting, error, onSubmit }: PaymentFormProps) {
           <p className="section-kicker">Create Payment</p>
           <h2>Send a new payment into the processing flow</h2>
         </div>
-        <p className="section-note">Great for demos: entries process asynchronously and update live.</p>
+        <p className="section-note">New dashboard payments use the simulator and update asynchronously.</p>
       </div>
 
       <form className="payment-form" onSubmit={handleSubmit}>
         <label>
           Merchant reference
           <input
+            disabled={submitting}
             required
             minLength={3}
             maxLength={64}
@@ -62,6 +64,7 @@ export function PaymentForm({ submitting, error, onSubmit }: PaymentFormProps) {
         <label>
           Amount
           <input
+            disabled={submitting}
             required
             type="number"
             min="0.01"
@@ -75,6 +78,7 @@ export function PaymentForm({ submitting, error, onSubmit }: PaymentFormProps) {
         <label>
           Currency
           <input
+            disabled={submitting}
             required
             minLength={3}
             maxLength={3}
@@ -87,6 +91,7 @@ export function PaymentForm({ submitting, error, onSubmit }: PaymentFormProps) {
         <label>
           Customer email
           <input
+            disabled={submitting}
             required
             type="email"
             value={formState.customer_email}
@@ -98,6 +103,7 @@ export function PaymentForm({ submitting, error, onSubmit }: PaymentFormProps) {
         <label className="form-field-wide">
           Description
           <textarea
+            disabled={submitting}
             rows={3}
             value={formState.description}
             onChange={(event) => updateField("description", event.target.value)}
@@ -114,7 +120,8 @@ export function PaymentForm({ submitting, error, onSubmit }: PaymentFormProps) {
           </button>
         </div>
 
-        {error ? <p className="form-error">{error}</p> : null}
+        {error ? <p className="form-error" role="alert">{error}</p> : null}
+        {confirmation ? <p className="form-confirmation" role="status">{confirmation}</p> : null}
       </form>
     </section>
   );

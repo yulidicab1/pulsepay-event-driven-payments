@@ -412,3 +412,269 @@ Git history or change an existing database password.
 Private connection URLs, passwords, integration keys, and encryption key files
 belong outside source directories and build contexts. The example file records
 paths and fictitious identifiers only. Dashboard authentication uses sessions.
+
+
+## Stripe test gateway
+
+The reusable gateway uses `stripe==15.3.1`, `StripeClient.v1.payment_intents`
+and API version `2026-06-24.dahlia`. It is not wired to the API, worker or
+frontend; the simulator and dashboard authentication continue to run as before.
+Setting a key does not activate payments. Worker execution requires the explicit
+opt-in documented below; API-created payments remain simulator payments.
+
+`STRIPE_MODE` accepts only `test`. Supply either `STRIPE_SECRET_KEY_FILE`
+(preferred, outside source/build contexts) or a server-only `STRIPE_SECRET_KEY`,
+never both. Only secret/restricted test-key prefixes are accepted; live and
+publishable keys are rejected before I/O. Keys use SecretStr and errors never
+include their values. `STRIPE_TIMEOUT_SECONDS` is finite, positive and at most
+30 seconds (default 10). TLS verification remains enabled. SDK verbose logging
+(`STRIPE_LOG` or `stripe.log`) is rejected, and its raw INFO/DEBUG logger is
+suppressed; application code should log only normalized error codes.
+
+`create_payment` creates and confirms a PaymentIntent using EUR, USD or GBP.
+Amounts must be Decimal, exactly representable in cents, positive and within
+Stripe's eight-digit minor-unit limit. Trailing zeroes are accepted; rounding
+and floating-point inputs are rejected. Currency is deterministically encoded
+in lowercase. Only payment-method references are accepted, never card data.
+Optional metadata is limited to UUID `merchant_id`, `payment_id` and
+`operation_id` values. The caller's metadata is copied, not mutated.
+
+Every create requires a caller-supplied idempotency key of 1–255 visible ASCII
+characters, preserved exactly. The gateway neither generates keys nor retries
+automatically. Identical calls produce identical payment parameters. The caller
+must persist the key and immutable request, bound retries to Stripe's retention
+window, and reconcile uncertain results before another operation. That durable
+workflow belongs to later activities; this adapter alone does not implement it.
+API v1 keys may be pruned after 24 hours; an unresolved operation must then be
+reconciled instead of creating another Intent with either an old or a new key.
+`retrieve_payment` only issues GET and never creates or confirms a payment.
+
+Results contain a normalized status, selected monetary evidence, provider ID,
+allowlisted UUID metadata and a fixed error code. They exclude client_secret,
+customer/payment details, raw responses and exception messages. Live-mode,
+malformed or inconsistent responses never produce success. Intermediate states
+(including action/confirmation/capture requirements) remain PENDING; network,
+timeout, 409, 429 and 5xx errors are UNKNOWN, not evidence that no charge exists.
+A card error without verifiable Intent evidence is also UNKNOWN; any extracted
+ID is only a candidate for later reconciliation. Configuration errors are not
+card declines.
+
+Unit tests inject a fake HTTP transport into the real pinned SDK and block
+network sockets. No account, credential or Stripe service is accessed. Even an
+external test-mode verification requires separate approval. Durable operations
+and opt-in worker reconciliation are described below. Public provider DTOs and
+the dashboard provider view are documented in the activity 5/6 section below.
+
+
+## Durable provider operations (Stripe activity 2)
+
+Each new Payment fixes its processing backend at creation. Existing API calls
+still create simulator payments; Stripe is disabled by default. Internal service
+callers may prepare a Stripe test operation with an explicit account and test
+PaymentMethod reference, without any credentials or external requests.
+
+The payment UUID is allocated before insert. Payment, provider idempotency key,
+canonical JSON request/hash, immutable account/test context and queue event are
+committed atomically. The client HTTP Idempotency-Key remains separate; a replay
+returns the original stored provider/context even if server configuration changes.
+No customer email, description, API key or client_secret enters the provider
+snapshot. A scoped repository lookup requires both merchant and expected account.
+
+Revision `s001_stripe_payment_operations` follows `a001_dashboard_sessions` and
+adds nullable columns without a server default or historical backfill. Provider
+reference/index logic is recovered from the unpublished 0bb migration, retaining
+an already-present compatible column and its values. Unknown revision histories
+require a separate approved recovery plan; no revision is stamped or rewritten.
+Owned and unowned historical payments keep IDs, owners, references and statuses,
+with processing_backend=NULL. They remain paused for explicit classification.
+Only explicit simulator rows are claimed by the default worker. Prepared Stripe
+rows need the opt-in worker described below. Changing an environment variable cannot reroute a payment.
+
+PostgreSQL checks validate the request SHA-256 and its amount/currency/UUID/account
+binding. Unique constraints protect provider keys and provider references per
+account/test context. A trigger rejects changes to operation identity, monetary
+parameters, provider request/key/account or an established provider reference;
+once recorded, the first-attempt/retry deadline cannot move. Stripe operations
+cannot be deleted without an explicit recovery plan; TRUNCATE is also blocked.
+Provider references must have the expected format for new Stripe operations.
+The retry window is fixed
+at 23 hours after first emission; preparation leaves emission timestamps empty.
+This activity performs no emissions or reconciliation transitions.
+
+JSON is stored as canonical text so Python and PostgreSQL hash the same bytes,
+without an extension. These guarantees require the Alembic PostgreSQL schema;
+SQLite and metadata.create_all are fast-test conveniences, not equivalent
+operation-immutability enforcement. Do not run a persistent upgrade without a
+verified backup, schema assessment and explicit authorization. Downgrade refuses
+to remove classified payments/provider evidence. Empty/legacy-only downgrade
+removes the additive columns; if a provider-reference column predated this
+revision, that schema detail must also be reviewed before any downgrade.
+
+The following section adds leases/fencing and opt-in execution/reconciliation.
+The public provider contract and dashboard are documented below. No production account or credential
+is supported. Real external test-mode calls still need separate approval.
+
+
+## Recoverable test-mode Stripe worker (activities 3 and 4)
+
+Execution remains disabled (`STRIPE_WORKER_ENABLED=false`). Opt-in requires an
+explicit `STRIPE_ACCOUNT_ID`, a valid server-side test key/file, and a lease longer
+than the configured transport budget. Keep the private file outside the repository
+and Docker context, mounted only into the worker. No secret is needed by React.
+This code has been verified with mocks only; external Stripe testing still needs
+separate authorization. This activity does not activate Stripe in Compose or API
+payment creation, implement Connect, or introduce card/SCA collection.
+
+The worker verifies the current key's account through SDK v1
+`accounts.retrieve_current()` before any PaymentIntent request. A different
+account/key fails safely. The repository selects only test operations bound to
+the configured account. Account selection never comes from an HTTP body or queue
+payload. A future account rotation cannot rewrite a stored operation's context.
+
+Revision `s002_stripe_execution_leases` follows s001 without altering published
+migrations. Four fields on Payment hold execution token, lease deadline, attempt
+counter and next reconciliation time. Historical data is not classified or sent.
+Row locking with SKIP LOCKED grants one active lease per payment, even with
+duplicate messages. Claims and first-attempt/retry deadlines commit before I/O.
+The processor receives a detached immutable contract, not a live ORM transaction.
+Applying a result locks the row and requires the same merchant/account/token and
+an unexpired lease. Stale results do not overwrite current evidence. New workers
+recover expired PROCESSING operations with a fresh token and the original key,
+parameters and retry deadline. Late duplicate messages are acknowledged without
+another provider call. Leases do not renew the provider's idempotency window.
+
+Known PaymentIntent references always use GET, including after the retry window.
+With no reference, identical POST replay is permitted only inside the conservative
+23-hour window. A monotonic budget anchored to database time is checked before
+I/O and again before SDK POST after account lookup. An expired/unsafe window
+requires review instead of a new key or charge. Network errors, timeouts, 5xx and
+incomplete responses are UNKNOWN, not proof of a decline. Reconciliation repeats
+with the configured delay, without applying the simulator's maximum retry rule.
+
+COMPLETED requires coherent succeeded evidence: reference, exact amount received,
+currency, verified account, merchant/payment metadata and livemode=false. Verified
+cancellation/decline maps to FAILED. Intermediate states keep PROCESSING with
+pending/requires_action provider state; unknown and review_required also keep
+PROCESSING publicly. No automatic confirmation/capture or manual-review action is
+added. Final succeeded/failed evidence is frozen by a PostgreSQL trigger. The
+dashboard exposes sanitized provider state as documented below; no credentials,
+snapshot or idempotency key is added to HTTP responses here.
+
+A lease fences database writes; it cannot cancel a provider request already in
+flight during a process pause. Overlapping transport attempts use the same
+persisted key/parameters, so provider idempotency is the external deduplication
+boundary. Tests demonstrate one simulated provider operation after lost responses,
+concurrent attempts and restarts, not a distributed exactly-once transaction.
+Production deployment also requires a trustworthy synchronized database clock,
+minimal DB privileges and an approved recovery procedure. Live mode is forbidden.
+Downgrade refuses to erase execution evidence. Synthetic backup/restore tests
+include active tokens/leases; persistent migrations are not authorized here.
+
+
+## Dashboard provider contract and validation (activities 5 and 6)
+
+The existing payment list, form, summaries and detail panel now show sanitized
+Stripe references and provider states. UNKNOWN and REVIEW_REQUIRED remain distinct
+from a confirmed FAILED payment. Their financial status stays PROCESSING; the
+panel explains uncertainty, paused automatic processing and required review.
+Known intermediate states never imply a completed charge. Historical unclassified
+payments keep their original data and remain paused. New dashboard payments still
+use the simulator; this UI does not activate Stripe, collect cards or expose a
+client_secret. No Stripe browser SDK or merchant API key is added.
+
+Public payment/list/processing DTOs add only processing_backend, provider_state,
+provider_status and a format-checked reference for explicitly classified Stripe
+operations. They never include provider account IDs, idempotency keys, request
+snapshots/hashes, execution tokens or leases. Historical references stay stored
+but are not disclosed as verified Stripe references before classification.
+Processing notes use an explicit safe allowlist; unknown internal messages are
+replaced with a generic note. Client integrations must treat failure_reason and
+queue notes as display text, not parse them as stable machine error codes.
+
+`usePayments` owns read lifecycle and cancellation. With the current unpaginated
+list contract, the panel derives summaries and selected record data from the same
+response, polling only the list and selected event history. Polls schedule after
+settlement, skip hidden documents and abort on selection/session changes. A
+generation guard prevents a pre-creation list response from replacing a newly
+created record. A future paginated API must provide corresponding aggregate data
+instead of deriving whole-merchant totals from one page.
+
+Payment creation uses a synchronous double-submit guard and one HTTP
+Idempotency-Key for an unchanged form after an unconfirmed response. It never
+automatically resends a POST. Failed/unconfirmed submissions retain their inputs;
+confirmed responses clear the form and announce that the payment was saved.
+This client key stays separate from the persisted Stripe key. Logout hides all
+merchant data immediately; an unconfirmed revocation blocks the panel and offers
+an explicit retry. Session cookies remain HttpOnly; CSRF stays in memory, without
+browser storage or integration API keys. Stale 401 responses cannot invalidate a
+newer client authentication generation.
+
+No data/failed initial reads are distinguished from a confirmed zero total. The
+panel keeps last known data on read failure, shows interrupted updates, and uses
+safe error text. Keyboard-selectable references, pressed filter states, focus
+outlines, live messages, reduced motion and contained mobile table scrolling are
+functional improvements; the existing visual structure and palette are retained.
+
+Vite exposes no custom environment prefix (`envPrefix: []`). Configuration remains
+server-side, including API_PROXY_TARGET. Docker and CI use Node 24 LTS; the image
+uses npm ci and runs the TypeScript/Vite build. Compatible lockfile fixes remove
+the dependency audit findings without upgrading the Vite major version. Backend
+security fixes pin FastAPI 0.165.0, Starlette 1.6.0 and pytest 9.0.3; the Stripe SDK
+and operation schema remain unchanged. Full backend/authentication/concurrency
+regression is required after dependency changes.
+
+### Reproducible browser tests
+
+Use Node 24 and the declared backend Python dependencies. Provide an independent,
+disposable PostgreSQL database explicitly; the fixture never falls back to the
+application DATABASE_URL. It accepts only a PostgreSQL `_test` database at a
+loopback/CI host, creates a random schema, seeds synthetic users and payments,
+and uses two workers with the existing fake provider. It loads application settings
+from a fresh temporary working directory with a cleared environment, so developer
+.env files and provider credentials cannot activate external requests.
+
+With the backend virtual environment activated:
+
+```bash
+cd frontend
+npm ci
+npx playwright install chromium
+E2E_POSTGRES_URL=postgresql+psycopg://pulsepay_test@127.0.0.1:5432/pulsepay_browser_test npm run test:e2e
+```
+
+For an installed Chrome, set E2E_BROWSER_CHANNEL=chrome. E2E_PYTHON can select the
+backend interpreter; E2E_FRONTEND_PORT and E2E_API_PORT can select unused local
+ports. Existing servers are never reused. The fixture requires explicit opt-in
+from Playwright, refuses malformed/non-test/remote configuration before creating
+a schema, and offers no test-control route in the application. Its fixed dummy
+credentials belong only to synthetic fixtures and must never be used for deployment.
+
+The browser suite covers provider states, lost creation responses, duplicate
+submits, cookie/session revocation, merchant switching, foreign IDs, CSRF, slow
+polling, safe read errors, keyboard/mobile behavior and unconfirmed logout.
+Page requests outside loopback are blocked. Traces containing headers/cookies are
+disabled. Generated screenshots and reports are ignored by Git.
+
+CI has backend tests with PostgreSQL 16 plus restore, frontend build/audit on
+Node 24, and browser integration with synthetic Stripe. It requires zero skipped
+backend cases, uses read-only repository permissions and does not persist checkout
+credentials. Local reproduction of these commands is evidence of local validation;
+remote GitHub checks must still pass after an explicitly authorized branch push.
+No permanent migrations, provider requests or deployments are part of these tests.
+
+## Independent future UI/UX phase (planned only)
+
+The next visual direction is a premium banking-style fintech interface: clarity
+and usability inspired by BBVA, blue/turquoise direction similar to CaixaBank,
+with an original PulsePay identity. No bank assets, branding or full redesign
+are implemented in this activity.
+
+Keep typed API contracts, usePayments, paymentPresentation and the session-aware
+client independent of layout/theme changes. Preserve the browser and financial
+regression tests during redesign. Review dashboard density and oversized hero
+space; navigation and discoverability of mobile payment details; responsive table
+column priorities; clearer attempt/retry terminology; accessible field-level
+validation and freshness indicators; and consistent state language. Pagination,
+larger data volumes and broader assistive-technology checks need their own design
+and acceptance criteria. Visual changes must preserve authentication, CSRF,
+merchant isolation, idempotency, worker fencing and reconciliation semantics.

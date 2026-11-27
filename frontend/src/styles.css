@@ -572,3 +572,33 @@ h3 {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+
+
+/* Functional additions only; the visual redesign is a separate activity. */
+.left-column, .panel, .detail-grid > div { min-width: 0; }
+.panel-heading h2, .provider-reference { overflow-wrap: anywhere; }
+.provider-reference { display: block; max-width: 100%; font-size: 0.82rem; }
+.provider-summary { margin-top: 0.4rem; }
+.status-unknown, .status-review_required, .status-requires_action {
+  background: var(--warning-soft); color: var(--warning);
+}
+.provider-notice { padding: 1rem; border-radius: 16px; background: var(--warning-soft); }
+.form-confirmation { grid-column: 1 / -1; margin: 0; padding: 1rem; border-radius: 16px;
+  background: var(--success-soft); color: var(--success); }
+.reference-button { border: 0; padding: 0; background: transparent; color: inherit; text-align: left;
+  overflow-wrap: anywhere; }
+button:focus-visible, .table-wrapper:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+.table-wrapper { max-width: 100%; }
+.payments-table { min-width: 720px; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+.account-header { flex-wrap: wrap; }
+@media (max-width: 720px) { .hero-note { white-space: normal; } }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+.session-error button { padding: 0.9rem 1.25rem; border: 0; border-radius: 999px; background: var(--text-strong); color: white; }
+
+.live-dot.updates-paused { background: var(--warning); animation: none; }

@@ -1,4 +1,6 @@
 from pathlib import Path
+import re
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, model_validator
@@ -17,6 +19,15 @@ def read_secret(value: SecretStr | None, path: Path | None) -> str | None:
     if not result:
         raise RuntimeError("Configured secret file is empty.")
     return result
+
+
+def validate_stripe_test_key(value: SecretStr) -> None:
+    if (
+        not isinstance(value, SecretStr)
+        or len(value.get_secret_value()) > 256
+        or re.fullmatch(r"(?:sk|rk)_test_[A-Za-z0-9_]+", value.get_secret_value()) is None
+    ):
+        raise ValueError("A Stripe test secret key is required.")
 
 
 class Settings(BaseSettings):
@@ -45,6 +56,14 @@ class Settings(BaseSettings):
     worker_batch_size: int = 10
     payment_random_failure_rate: float = 0.0
     webhook_keyring_file: Path | None = None
+    stripe_worker_enabled: bool = False
+    stripe_account_id: str | None = None
+    stripe_lease_seconds: int = Field(default=120, ge=5, le=3600)
+    stripe_reconcile_delay_seconds: int = Field(default=30, ge=1, le=3600)
+    stripe_mode: Literal["test"] = "test"
+    stripe_secret_key: SecretStr | None = None
+    stripe_secret_key_file: Path | None = None
+    stripe_timeout_seconds: float = Field(default=10.0, gt=0, le=30, allow_inf_nan=False)
 
     @model_validator(mode="after")
     def validate_origin(self):
@@ -70,6 +89,16 @@ class Settings(BaseSettings):
         self.public_origin = origin.geturl()
         return self
 
+    @model_validator(mode="after")
+    def validate_stripe_worker(self):
+        if self.stripe_account_id is not None and re.fullmatch(r"acct_[A-Za-z0-9]{1,250}", self.stripe_account_id) is None:
+            raise ValueError("Invalid Stripe account context.")
+        if self.stripe_worker_enabled and self.stripe_account_id is None:
+            raise ValueError("Stripe worker requires an explicit test account.")
+        if self.stripe_lease_seconds < 4 * self.stripe_timeout_seconds + 5:
+            raise ValueError("Stripe lease must exceed the bounded provider request budget.")
+        return self
+
     @property
     def secure_cookies(self) -> bool:
         return urlsplit(self.public_origin).scheme == "https"
@@ -77,6 +106,11 @@ class Settings(BaseSettings):
     @property
     def session_cookie_name(self) -> str:
         return "__Host-pulsepay_session" if self.secure_cookies else "pulsepay_dev_session"
+
+    def get_stripe_secret_key(self) -> SecretStr:
+        value = SecretStr(read_secret(self.stripe_secret_key, self.stripe_secret_key_file) or "")
+        validate_stripe_test_key(value)
+        return value
 
     def get_database_url(self) -> str:
         result = read_secret(self.database_url, self.database_url_file)

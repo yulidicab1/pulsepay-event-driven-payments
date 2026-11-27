@@ -10,6 +10,7 @@ from uuid import uuid4
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 import pytest
 from sqlalchemy import create_engine, func, select, text
@@ -41,6 +42,7 @@ def clean_migration_revision(pg_engine):
 
 PASSWORD = "synthetic-postgres-password"
 ORIGIN = "http://localhost:5173"
+HEAD_REVISION = ScriptDirectory(str(Path(__file__).resolve().parents[1] / "migrations")).get_current_head()
 
 
 def migrate(engine, target):
@@ -108,7 +110,7 @@ def test_interrupted_migration_rolls_back_and_can_be_retried(pg_engine, monkeypa
         assert connection.scalar(text("SELECT merchant_reference FROM payments WHERE id=:id"), {"id": payment_id}) == "interrupted-history"
     migrate(pg_engine, "head")
     with pg_engine.connect() as connection:
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "a001_dashboard_sessions"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == HEAD_REVISION
         assert connection.scalar(text("SELECT merchant_id FROM payments WHERE id=:id"), {"id": payment_id}) is None
 
 
@@ -300,7 +302,7 @@ def test_downgrade_refuses_to_remove_user_information(pg_engine, session_factory
             command.downgrade(config, "72888bf6baba")
     with session_factory() as session:
         assert session.scalar(select(func.count(DashboardUser.id))) == 1
-        assert session.scalar(text("SELECT version_num FROM alembic_version")) == "a001_dashboard_sessions"
+        assert session.scalar(text("SELECT version_num FROM alembic_version")) == HEAD_REVISION
 
 
 def test_migrations_match_models(pg_engine):

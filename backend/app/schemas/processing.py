@@ -1,9 +1,10 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from app.models.payment import PaymentStatus, QueueMessageStatus
+from app.schemas.provider import PaymentProviderInfo, public_processing_note
 
 
 class PaymentMetrics(BaseModel):
@@ -28,8 +29,10 @@ class PaymentEventItem(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    _public_error = field_validator("last_error", mode="before")(public_processing_note)
 
-class PaymentProcessingSnapshot(BaseModel):
+
+class PaymentProcessingSnapshot(PaymentProviderInfo):
     id: UUID
     merchant_reference: str
     status: PaymentStatus
@@ -38,3 +41,5 @@ class PaymentProcessingSnapshot(BaseModel):
     latest_event_status: QueueMessageStatus | None
     latest_event_attempts: int | None
     latest_event_error: str | None
+
+    _public_notes = field_validator("failure_reason", "latest_event_error", mode="before")(public_processing_note)

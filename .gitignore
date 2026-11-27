@@ -24,3 +24,7 @@ credentials
 credentials.*
 secrets/
 !/.env.example
+
+# Generated browser validation artifacts.
+/frontend/test-results/
+/frontend/playwright-report/

@@ -18,6 +18,10 @@ def build_processing_snapshot(
     latest_event: PaymentEvent | None,
 ) -> PaymentProcessingSnapshot:
     return PaymentProcessingSnapshot(
+        processing_backend=payment.processing_backend,
+        provider_reference=payment.provider_reference,
+        provider_state=payment.provider_state,
+        provider_status=payment.provider_status,
         id=payment.id,
         merchant_reference=payment.merchant_reference,
         status=payment.status,
