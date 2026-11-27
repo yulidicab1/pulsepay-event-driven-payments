@@ -22,9 +22,16 @@ from app.services.worker_service import PaymentWorkerService
 
 
 @pytest.fixture(autouse=True)
-def no_network(monkeypatch):
+def no_network(pg_engine, monkeypatch):
+    resolve = socket.getaddrinfo
     def forbidden(*a,**k):pytest.fail("Recovery test attempted external network")
-    monkeypatch.setattr(socket,"getaddrinfo",forbidden)
+    def test_database_only(host, port, *args, **kwargs):
+        # psycopg resolves container hostnames through Python on some runtimes.
+        # Allow only the already-validated disposable database; Stripe stays blocked.
+        if pg_engine.url.host is not None and host == pg_engine.url.host and str(port) == str(pg_engine.url.port or 5432):
+            return resolve(host, port, *args, **kwargs)
+        return forbidden()
+    monkeypatch.setattr(socket,"getaddrinfo",test_database_only)
     monkeypatch.setattr(socket.socket,"connect",forbidden)
 
 

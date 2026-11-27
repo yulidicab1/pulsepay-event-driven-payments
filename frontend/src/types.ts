@@ -9,7 +9,18 @@ export interface PaymentMetrics {
   failed: number;
 }
 
-export interface PaymentRecord {
+export type ProviderState = "prepared" | "in_flight" | "pending" | "requires_action" | "unknown" | "review_required" | "succeeded" | "failed";
+export type ProviderStatus = "succeeded" | "canceled" | "processing" | "requires_payment_method" | "requires_confirmation" | "requires_action" | "requires_capture";
+export type PaymentFilter = PaymentStatus | "ALL" | "UNKNOWN" | "REVIEW_REQUIRED";
+
+export interface PaymentProviderInfo {
+  processing_backend: "simulator" | "stripe" | null;
+  provider_reference: string | null;
+  provider_state: ProviderState | null;
+  provider_status: ProviderStatus | null;
+}
+
+export interface PaymentRecord extends PaymentProviderInfo {
   id: string;
   merchant_reference: string;
   amount: string;
@@ -36,7 +47,7 @@ export interface PaymentEventItem {
   updated_at: string;
 }
 
-export interface PaymentProcessingSnapshot {
+export interface PaymentProcessingSnapshot extends PaymentProviderInfo {
   id: string;
   merchant_reference: string;
   status: PaymentStatus;

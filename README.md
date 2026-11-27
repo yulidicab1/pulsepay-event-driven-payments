@@ -463,7 +463,7 @@ Unit tests inject a fake HTTP transport into the real pinned SDK and block
 network sockets. No account, credential or Stripe service is accessed. Even an
 external test-mode verification requires separate approval. Durable operations
 and opt-in worker reconciliation are described below. Public provider DTOs and
-the dashboard provider view remain separate activities.
+the dashboard provider view are documented in the activity 5/6 section below.
 
 
 ## Durable provider operations (Stripe activity 2)
@@ -511,7 +511,7 @@ removes the additive columns; if a provider-reference column predated this
 revision, that schema detail must also be reviewed before any downgrade.
 
 The following section adds leases/fencing and opt-in execution/reconciliation.
-Public provider DTOs and UI remain later activities. No production account or credential
+The public provider contract and dashboard are documented below. No production account or credential
 is supported. Real external test-mode calls still need separate approval.
 
 
@@ -557,7 +557,7 @@ cancellation/decline maps to FAILED. Intermediate states keep PROCESSING with
 pending/requires_action provider state; unknown and review_required also keep
 PROCESSING publicly. No automatic confirmation/capture or manual-review action is
 added. Final succeeded/failed evidence is frozen by a PostgreSQL trigger. The
-dashboard will expose sanitized provider state in activity 5; no credentials,
+dashboard exposes sanitized provider state as documented below; no credentials,
 snapshot or idempotency key is added to HTTP responses here.
 
 A lease fences database writes; it cannot cancel a provider request already in
@@ -569,3 +569,112 @@ Production deployment also requires a trustworthy synchronized database clock,
 minimal DB privileges and an approved recovery procedure. Live mode is forbidden.
 Downgrade refuses to erase execution evidence. Synthetic backup/restore tests
 include active tokens/leases; persistent migrations are not authorized here.
+
+
+## Dashboard provider contract and validation (activities 5 and 6)
+
+The existing payment list, form, summaries and detail panel now show sanitized
+Stripe references and provider states. UNKNOWN and REVIEW_REQUIRED remain distinct
+from a confirmed FAILED payment. Their financial status stays PROCESSING; the
+panel explains uncertainty, paused automatic processing and required review.
+Known intermediate states never imply a completed charge. Historical unclassified
+payments keep their original data and remain paused. New dashboard payments still
+use the simulator; this UI does not activate Stripe, collect cards or expose a
+client_secret. No Stripe browser SDK or merchant API key is added.
+
+Public payment/list/processing DTOs add only processing_backend, provider_state,
+provider_status and a format-checked reference for explicitly classified Stripe
+operations. They never include provider account IDs, idempotency keys, request
+snapshots/hashes, execution tokens or leases. Historical references stay stored
+but are not disclosed as verified Stripe references before classification.
+Processing notes use an explicit safe allowlist; unknown internal messages are
+replaced with a generic note. Client integrations must treat failure_reason and
+queue notes as display text, not parse them as stable machine error codes.
+
+`usePayments` owns read lifecycle and cancellation. With the current unpaginated
+list contract, the panel derives summaries and selected record data from the same
+response, polling only the list and selected event history. Polls schedule after
+settlement, skip hidden documents and abort on selection/session changes. A
+generation guard prevents a pre-creation list response from replacing a newly
+created record. A future paginated API must provide corresponding aggregate data
+instead of deriving whole-merchant totals from one page.
+
+Payment creation uses a synchronous double-submit guard and one HTTP
+Idempotency-Key for an unchanged form after an unconfirmed response. It never
+automatically resends a POST. Failed/unconfirmed submissions retain their inputs;
+confirmed responses clear the form and announce that the payment was saved.
+This client key stays separate from the persisted Stripe key. Logout hides all
+merchant data immediately; an unconfirmed revocation blocks the panel and offers
+an explicit retry. Session cookies remain HttpOnly; CSRF stays in memory, without
+browser storage or integration API keys. Stale 401 responses cannot invalidate a
+newer client authentication generation.
+
+No data/failed initial reads are distinguished from a confirmed zero total. The
+panel keeps last known data on read failure, shows interrupted updates, and uses
+safe error text. Keyboard-selectable references, pressed filter states, focus
+outlines, live messages, reduced motion and contained mobile table scrolling are
+functional improvements; the existing visual structure and palette are retained.
+
+Vite exposes no custom environment prefix (`envPrefix: []`). Configuration remains
+server-side, including API_PROXY_TARGET. Docker and CI use Node 24 LTS; the image
+uses npm ci and runs the TypeScript/Vite build. Compatible lockfile fixes remove
+the dependency audit findings without upgrading the Vite major version. Backend
+security fixes pin FastAPI 0.165.0, Starlette 1.6.0 and pytest 9.0.3; the Stripe SDK
+and operation schema remain unchanged. Full backend/authentication/concurrency
+regression is required after dependency changes.
+
+### Reproducible browser tests
+
+Use Node 24 and the declared backend Python dependencies. Provide an independent,
+disposable PostgreSQL database explicitly; the fixture never falls back to the
+application DATABASE_URL. It accepts only a PostgreSQL `_test` database at a
+loopback/CI host, creates a random schema, seeds synthetic users and payments,
+and uses two workers with the existing fake provider. It loads application settings
+from a fresh temporary working directory with a cleared environment, so developer
+.env files and provider credentials cannot activate external requests.
+
+With the backend virtual environment activated:
+
+```bash
+cd frontend
+npm ci
+npx playwright install chromium
+E2E_POSTGRES_URL=postgresql+psycopg://pulsepay_test@127.0.0.1:5432/pulsepay_browser_test npm run test:e2e
+```
+
+For an installed Chrome, set E2E_BROWSER_CHANNEL=chrome. E2E_PYTHON can select the
+backend interpreter; E2E_FRONTEND_PORT and E2E_API_PORT can select unused local
+ports. Existing servers are never reused. The fixture requires explicit opt-in
+from Playwright, refuses malformed/non-test/remote configuration before creating
+a schema, and offers no test-control route in the application. Its fixed dummy
+credentials belong only to synthetic fixtures and must never be used for deployment.
+
+The browser suite covers provider states, lost creation responses, duplicate
+submits, cookie/session revocation, merchant switching, foreign IDs, CSRF, slow
+polling, safe read errors, keyboard/mobile behavior and unconfirmed logout.
+Page requests outside loopback are blocked. Traces containing headers/cookies are
+disabled. Generated screenshots and reports are ignored by Git.
+
+CI has backend tests with PostgreSQL 16 plus restore, frontend build/audit on
+Node 24, and browser integration with synthetic Stripe. It requires zero skipped
+backend cases, uses read-only repository permissions and does not persist checkout
+credentials. Local reproduction of these commands is evidence of local validation;
+remote GitHub checks must still pass after an explicitly authorized branch push.
+No permanent migrations, provider requests or deployments are part of these tests.
+
+## Independent future UI/UX phase (planned only)
+
+The next visual direction is a premium banking-style fintech interface: clarity
+and usability inspired by BBVA, blue/turquoise direction similar to CaixaBank,
+with an original PulsePay identity. No bank assets, branding or full redesign
+are implemented in this activity.
+
+Keep typed API contracts, usePayments, paymentPresentation and the session-aware
+client independent of layout/theme changes. Preserve the browser and financial
+regression tests during redesign. Review dashboard density and oversized hero
+space; navigation and discoverability of mobile payment details; responsive table
+column priorities; clearer attempt/retry terminology; accessible field-level
+validation and freshness indicators; and consistent state language. Pagination,
+larger data volumes and broader assistive-technology checks need their own design
+and acceptance criteria. Visual changes must preserve authentication, CSRF,
+merchant isolation, idempotency, worker fencing and reconciliation semantics.

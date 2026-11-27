@@ -3,6 +3,8 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  // All application configuration is server-side; expose no VITE_* values.
+  envPrefix: [],
   server: {
     port: 5173,
     proxy: {
